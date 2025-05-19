@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,20 +18,24 @@ const (
 	port = 8080
 )
 
+// global server instance to allow shutdown
+var httpServer *http.Server
+
 // Device represents a Kasa device with relevant info for the UI
 type Device struct {
 	DeviceID   string `json:"deviceId"`
 	Alias      string `json:"alias"`
 	Model      string `json:"model"`
-	IsColor    bool   `json:"isColor"`
 	IP         string `json:"ip"`
-	MAC        string `json:"mac"`
-	Status     string `json:"status"` // e.g., "Online", "Offline", "Discovered"
-	IsOn       bool   `json:"isOn"`
-	Hue        int    `json:"hue,omitempty"`        // 0-360, from light_state
-	Saturation int    `json:"saturation,omitempty"` // 0-100, from light_state
-	Brightness int    `json:"brightness,omitempty"` // 0-100, from light_state
-	ColorTemp  int    `json:"color_temp,omitempty"` // Kelvin, from light_state
+	MACAddress string `json:"mac_address"`      // Changed from MAC, updated tag
+	IsColor    bool   `json:"is_color"`         // Updated tag
+	IsDimmable bool   `json:"is_dimmable"`      // New field
+	RelayState bool   `json:"relay_state"`      // Changed from IsOn, updated tag
+	Status     string `json:"status,omitempty"` // Status for UI, e.g., "Online", "Discovered"
+	Hue        int    `json:"hue,omitempty"`
+	Saturation int    `json:"saturation,omitempty"`
+	Brightness int    `json:"brightness,omitempty"`
+	ColorTemp  int    `json:"color_temp,omitempty"`
 }
 
 // Store discovered devices globally for convenience
@@ -38,25 +43,33 @@ var discoveredDevices []Device
 
 func main() {
 	// Set up HTTP routes
-	http.HandleFunc("/api/discover", handleDiscover)
-	http.HandleFunc("/api/device-details", handleGetDeviceDetails)
-	http.HandleFunc("/api/set-power", handleSetPower)
-	http.HandleFunc("/api/set-light-state", handleSetLightState)
-	
-	// Serve static files
-	http.Handle("/", http.FileServer(http.Dir("cmd/kasaserver/static")))
-	
+	mux := http.NewServeMux() // Create a new ServeMux
+	mux.HandleFunc("/api/discover", handleDiscover)
+	mux.HandleFunc("/api/device-details", handleGetDeviceDetails)
+	mux.HandleFunc("/api/set-power", handleSetPower)
+	mux.HandleFunc("/api/set-light-state", handleSetLightState)
+	mux.HandleFunc("/api/shutdown", handleShutdown) // New shutdown endpoint
+
+	// Serve static files - use the mux
+	mux.Handle("/", http.FileServer(http.Dir("cmd/kasaserver/static")))
+
 	// Start the server
 	serverAddr := fmt.Sprintf("localhost:%d", port)
+	httpServer = &http.Server{ // Assign to the global variable
+		Addr:    serverAddr,
+		Handler: mux, // Use the mux
+	}
+
 	log.Printf("Starting Kasa Light Control server on http://%s", serverAddr)
-	
+
 	// Open browser automatically
 	go openBrowser(fmt.Sprintf("http://%s", serverAddr))
-	
+
 	// Start the server
-	if err := http.ListenAndServe(serverAddr, nil); err != nil {
-		log.Fatal(err)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Could not listen on %s: %v\n", serverAddr, err)
 	}
+	log.Println("Server gracefully stopped") // Message after server stops
 }
 
 // openBrowser tries to open the URL in a browser
@@ -72,7 +85,7 @@ func openBrowser(url string) {
 	default: // "linux", "freebsd", etc.
 		err = exec.Command("xdg-open", url).Start()
 	}
-	
+
 	if err != nil {
 		log.Printf("Error opening browser: %v", err)
 	}
@@ -81,33 +94,35 @@ func openBrowser(url string) {
 // API handlers
 func handleDiscover(w http.ResponseWriter, r *http.Request) {
 	log.Println("API: Discovering devices...")
-	
+
 	devices, err := kasa.DiscoverDevices(5 * time.Second)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to discover devices: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	log.Printf("Found %d devices", len(devices))
-	
+
 	// Convert to []Device for the API response
 	discoveredDevices = make([]Device, len(devices))
 	for i, d := range devices {
 		discoveredDevices[i] = Device{
-			IP:       d.IP,
-			Alias:    d.Alias,
-			Model:    d.Model,
-			DeviceID: "",    // Default value
-			IsColor:  false, // Default value
-			Status:   "Discovered", // Initial status
+			IP:         d.IP,
+			Alias:      d.Alias,
+			Model:      d.Model,
+			DeviceID:   "",    // Default value
+			MACAddress: "",    // Default value
+			IsColor:    false, // Default value
+			IsDimmable: false, // Default value
+			Status:     "Discovered", // Initial status
 		}
 	}
-	
+
 	// Sort devices by alias for consistent ordering
 	sort.Slice(discoveredDevices, func(i, j int) bool {
 		return discoveredDevices[i].Alias < discoveredDevices[j].Alias
 	})
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(discoveredDevices)
 }
@@ -118,7 +133,7 @@ func handleGetDeviceDetails(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing IP parameter", http.StatusBadRequest)
 		return
 	}
-	
+
 	log.Printf("Fetching details for IP: %s", ip)
 	sysInfo, err := kasa.GetSysInfo(ip)
 	if err != nil {
@@ -129,34 +144,31 @@ func handleGetDeviceDetails(w http.ResponseWriter, r *http.Request) {
 
 	// Construct the detailed device object
 	detailedDevice := Device{
-		DeviceID: sysInfo.DeviceID,
-		Alias:    sysInfo.Alias,
-		Model:    sysInfo.Model,
-		IsColor:  sysInfo.IsColor == 1,
-		IP:       ip,
-		MAC:      sysInfo.Mac, // Assuming Mac is populated in GetSysInfo correctly
-		Status:   "Online",    // If we got sysInfo, it's online
+		IP:         ip,
+		Alias:      sysInfo.Alias,
+		Model:      sysInfo.Model,
+		DeviceID:   sysInfo.DeviceID,
+		MACAddress: sysInfo.Mac, // Default to sysInfo.Mac
+		IsColor:    sysInfo.IsColor == 1,
+		IsDimmable: sysInfo.IsDimmable == 1,
+		Status:     "Online", // If GetSysInfo is successful, device is Online
+	}
+
+	if sysInfo.Mac == "" && sysInfo.MicMac != "" {
+		detailedDevice.MACAddress = sysInfo.MicMac // Use MicMac if Mac is empty
 	}
 
 	if sysInfo.LightState != nil {
-		detailedDevice.IsOn = sysInfo.LightState.OnOff == 1
-		// Only populate color/brightness details if it's a color bulb and they are meaningful
-		if detailedDevice.IsColor {
-			detailedDevice.Hue = sysInfo.LightState.Hue
-			detailedDevice.Saturation = sysInfo.LightState.Saturation
-			detailedDevice.Brightness = sysInfo.LightState.Brightness
-		}
-		// ColorTemp can be present for both color and non-color (tunable white) bulbs
+		detailedDevice.RelayState = sysInfo.LightState.OnOff == 1
+		detailedDevice.Hue = sysInfo.LightState.Hue
+		detailedDevice.Saturation = sysInfo.LightState.Saturation
+		detailedDevice.Brightness = sysInfo.LightState.Brightness
 		detailedDevice.ColorTemp = sysInfo.LightState.ColorTemp
 	} else {
-		// For devices without light_state (e.g., plugs), set defaults or specific logic
-		// Check if it's a plug based on model or mic_type if necessary.
-		// For now, we assume if no light_state, it might be a plug or non-lighting device.
-		// The KasaSystemInfo struct has RelayState for plugs, but GetSysInfo currently doesn't parse it out simply.
-		// To check plug state, a different command `{"system":{"get_sysinfo":null}}` would need parsing for `relay_state`
-		// For simplicity, we'll rely on LightState for bulbs.
-		// If it's a smart plug, IsOn might be determined by relay_state, not covered here yet.
-		detailedDevice.IsOn = false // Default for non-light_state devices or if state is unknown
+		// For devices without LightState (e.g., plugs that are not lights, or error fetching LightState part)
+		// Check sysInfo for a general relay_state if applicable for non-light devices (not present in KasaSystemInfo currently)
+		// For now, if no LightState, assume it's not a light or power state is unknown for light features.
+		detailedDevice.RelayState = false // Default for safety if not a light
 	}
 
 	// Update the global list (or specific device if already present)
@@ -189,7 +201,7 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Parse the request body
 	var req SetPowerRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
@@ -197,9 +209,9 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
-	
+
 	log.Printf("API: Setting power for %s to %v", req.IP, req.On)
-	
+
 	// Find the device in our list to get its alias for logging
 	var deviceAlias string
 	for _, d := range discoveredDevices {
@@ -208,17 +220,17 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	
+
 	// Get current system info to check if it's a bulb
 	sysInfo, err := kasa.GetSysInfo(req.IP)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get device info: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Prepare command based on device type
 	simpleDesiredState := make(map[string]interface{})
-	
+
 	if sysInfo.LightState != nil { // KL130 bulb
 		simpleDesiredState["on_off"] = ternInt(req.On, 1, 0)
 	} else {
@@ -227,16 +239,16 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
-	
+
 	// Send command
 	_, err = kasa.SetLightState(req.IP, simpleDesiredState)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to set power: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	log.Printf("Successfully set power for %s to %v", deviceAlias, req.On)
-	
+
 	// Return success response
 	response := map[string]interface{}{
 		"status": "success",
@@ -325,6 +337,26 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		"color_temp": lightState.ColorTemp,
 	}
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleShutdown gracefully shuts down the server
+func handleShutdown(w http.ResponseWriter, r *http.Request) {
+	log.Println("Shutdown request received")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Server is shutting down..."))
+
+	// Create a context with a timeout for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		// Give a moment for the HTTP response to be sent
+		time.Sleep(1 * time.Second)
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("Error during server shutdown: %v", err)
+		}
+		log.Println("Server shutdown complete. Exiting application.")
+	}()
 }
 
 // Helper functions
