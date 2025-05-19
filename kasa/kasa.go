@@ -63,9 +63,10 @@ func SendCommand(ip string, commandPayload interface{}) (map[string]interface{},
 	fullRequest := append(lengthPrefix, encryptedRequest...)
 
 	// 4. Establish TCP connection
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, DefaultPort), DefaultTimeout)
+	address := net.JoinHostPort(ip, fmt.Sprintf("%d", DefaultPort))
+	conn, err := net.DialTimeout("tcp", address, DefaultTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to device %s:%d: %w", ip, DefaultPort, err)
+		return nil, fmt.Errorf("failed to connect to device %s: %w", address, err)
 	}
 	defer conn.Close()
 
