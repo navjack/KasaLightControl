@@ -9,8 +9,8 @@ import (
 )
 
 func main() {
-	bulbIP := flag.String("ip", "", "IP address of the Kasa bulb")
-	commandStr := flag.String("command", "get_sysinfo", "Command to execute: get_sysinfo, set_hsv, turn_on, turn_off, set_brightness, set_colortemp")
+	bulbIP := flag.String("ip", "", "IP address of the Kasa bulb (required for most commands)")
+	commandStr := flag.String("command", "get_sysinfo", "Command to execute: get_sysinfo, set_hsv, turn_on, turn_off, set_brightness, set_colortemp, discover")
 
 	// Flags for set_hsv
 	hue := flag.Int("hue", -1, "Hue (0-360) for set_hsv")
@@ -26,8 +26,8 @@ func main() {
 
 	flag.Parse()
 
-	if *bulbIP == "" {
-		fmt.Println("Error: Bulb IP address is required. Use the -ip flag.")
+	if *commandStr != "discover" && *bulbIP == "" {
+		fmt.Println("Error: Bulb IP address is required for this command. Use the -ip flag.")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -169,8 +169,25 @@ func main() {
 				"transition_light_state": state,
 			},
 		}
+	case "discover":
+		actionDescription = "Attempting to discover Kasa devices on the network..."
+		fmt.Println(actionDescription) // Print action description before potential long operation
+		discoveredDevices, err := kasa.DiscoverDevices(kasa.DiscoveryTimeout) // Using default from kasa package
+		if err != nil {
+			fmt.Printf("Error during device discovery: %v\n", err)
+			os.Exit(1)
+		}
+		if len(discoveredDevices) == 0 {
+			fmt.Println("No Kasa devices found.")
+		} else {
+			fmt.Printf("Found %d Kasa device(s):\n", len(discoveredDevices))
+			for i, device := range discoveredDevices {
+				fmt.Printf("  %d. IP: %s, Alias: %s, Model: %s\n", i+1, device.IP, device.Alias, device.Model)
+			}
+		}
+		return // Discovery command doesn't send a command to a specific IP, so we exit here.
 	default:
-		fmt.Printf("Error: Unknown command '%s'. Valid commands are 'get_sysinfo', 'set_hsv', 'turn_on', 'turn_off', 'set_brightness', or 'set_colortemp'.\n", *commandStr)
+		fmt.Printf("Error: Unknown command '%s'. Valid commands are 'get_sysinfo', 'set_hsv', 'turn_on', 'turn_off', 'set_brightness', 'set_colortemp', or 'discover'.\n", *commandStr)
 		flag.Usage()
 		os.Exit(1)
 	}
