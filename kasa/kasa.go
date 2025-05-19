@@ -1,0 +1,116 @@
+package kasa
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"net"
+	"time"
+)
+
+const (
+	DefaultPort         = 9999
+	InitializationVector = 171
+	DefaultTimeout      = 5 * time.Second
+)
+
+// encrypt performs XOR encryption on the plaintext string.
+// The Kasa protocol prepends the 4-byte big-endian length of the
+// original plaintext *before* encryption, but this function only returns the encrypted payload.
+// The length prefixing is handled by the SendCommand function.
+func encrypt(plaintext string) []byte {
+	key := byte(InitializationVector)
+	payload := []byte(plaintext)
+	encryptedPayload := make([]byte, len(payload))
+
+	for i, pByte := range payload {
+		encryptedPayload[i] = key ^ pByte
+		key = encryptedPayload[i] // Next key is the current encrypted byte
+	}
+	return encryptedPayload
+}
+
+// decrypt performs XOR decryption on the ciphertext byte array.
+func decrypt(ciphertext []byte) (string, error) {
+	key := byte(InitializationVector)
+	decryptedPayload := make([]byte, len(ciphertext))
+
+	for i, cByte := range ciphertext {
+		decryptedPayload[i] = key ^ cByte
+		key = cByte // Next key is the current ciphertext byte
+	}
+	return string(decryptedPayload), nil
+}
+
+// SendCommand constructs the payload, encrypts it, sends it to the device,
+// receives the response, decrypts it, and unmarshals it.
+func SendCommand(ip string, commandPayload interface{}) (map[string]interface{}, error) {
+	// 1. Marshal the command payload to JSON string
+	jsonPayloadBytes, err := json.Marshal(commandPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal command to JSON: %w", err)
+	}
+	jsonPayloadString := string(jsonPayloadBytes)
+
+	// 2. Encrypt the JSON string
+	encryptedRequest := encrypt(jsonPayloadString)
+
+	// 3. Prepend the length of the *original plaintext* as a 4-byte big-endian uint32
+	requestLength := uint32(len(jsonPayloadString))
+	lengthPrefix := make([]byte, 4)
+	binary.BigEndian.PutUint32(lengthPrefix, requestLength)
+
+	fullRequest := append(lengthPrefix, encryptedRequest...)
+
+	// 4. Establish TCP connection
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, DefaultPort), DefaultTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to device %s:%d: %w", ip, DefaultPort, err)
+	}
+	defer conn.Close()
+
+	// Set read/write deadlines
+	_ = conn.SetDeadline(time.Now().Add(DefaultTimeout))
+
+	// 5. Send the data
+	_, err = conn.Write(fullRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send data to device: %w", err)
+	}
+
+	// 6. Receive the response
+	// First, read the 4-byte length prefix of the response
+	responseLengthPrefix := make([]byte, 4)
+	var n int // Declare n here to check if read was successful
+	n, err = conn.Read(responseLengthPrefix)
+	if err != nil || n < 4 {
+		return nil, fmt.Errorf("failed to read response length prefix (read %d bytes): %w", n, err)
+	}
+	responseLength := binary.BigEndian.Uint32(responseLengthPrefix)
+
+	// Now read the actual encrypted response
+	encryptedResponse := make([]byte, responseLength)
+	readBytes := 0
+	for readBytes < int(responseLength) {
+		nRead, err := conn.Read(encryptedResponse[readBytes:])
+		if err != nil {
+			return nil, fmt.Errorf("failed to read encrypted response: %w (read %d/%d bytes)", err, readBytes+nRead, responseLength)
+		}
+		readBytes += nRead
+	}
+
+	// 7. Decrypt the response
+	decryptedResponseString, err := decrypt(encryptedResponse)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt response: %w", err)
+	}
+
+	// 8. Unmarshal the JSON response
+	var result map[string]interface{}
+	err = json.Unmarshal([]byte(decryptedResponseString), &result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON response: %w. Raw response: %s", err, decryptedResponseString)
+	}
+
+	return result, nil
+}
