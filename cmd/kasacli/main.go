@@ -10,7 +10,7 @@ import (
 
 func main() {
 	bulbIP := flag.String("ip", "", "IP address of the Kasa bulb")
-	commandStr := flag.String("command", "get_sysinfo", "Command to execute: get_sysinfo or set_hsv")
+	commandStr := flag.String("command", "get_sysinfo", "Command to execute: get_sysinfo, set_hsv, turn_on, or turn_off")
 
 	// Flags for set_hsv
 	hue := flag.Int("hue", -1, "Hue (0-360) for set_hsv")
@@ -56,8 +56,8 @@ func main() {
 			os.Exit(1)
 		}
 		actionDescription = fmt.Sprintf("Attempting to set HSV (H:%d, S:%d, V:%d, T:%dms) on bulb at %s...", *hue, *sat, *val, *transition, *bulbIP)
-		hsvState := map[string]interface{}{
-			"on_off":         1,
+		state := map[string]interface{}{
+			"on_off":         1, // Ensure bulb is on when setting color
 			"ignore_default": 1,
 			"hue":            *hue,
 			"saturation":     *sat,
@@ -65,15 +65,43 @@ func main() {
 			"color_temp":     0,    // Must be 0 for HSV mode
 		}
 		if *transition > 0 {
-			hsvState["transition_period"] = *transition
+			state["transition_period"] = *transition
 		}
 		commandPayload = map[string]interface{}{
 			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": hsvState,
+				"transition_light_state": state,
+			},
+		}
+	case "turn_on":
+		actionDescription = fmt.Sprintf("Attempting to turn ON bulb at %s (T:%dms)...", *bulbIP, *transition)
+		state := map[string]interface{}{
+			"on_off":         1,
+			"ignore_default": 1,
+		}
+		if *transition > 0 {
+			state["transition_period"] = *transition
+		}
+		commandPayload = map[string]interface{}{
+			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
+				"transition_light_state": state,
+			},
+		}
+	case "turn_off":
+		actionDescription = fmt.Sprintf("Attempting to turn OFF bulb at %s (T:%dms)...", *bulbIP, *transition)
+		state := map[string]interface{}{
+			"on_off":         0,
+			"ignore_default": 1,
+		}
+		if *transition > 0 {
+			state["transition_period"] = *transition
+		}
+		commandPayload = map[string]interface{}{
+			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
+				"transition_light_state": state,
 			},
 		}
 	default:
-		fmt.Printf("Error: Unknown command '%s'. Valid commands are 'get_sysinfo' or 'set_hsv'.\n", *commandStr)
+		fmt.Printf("Error: Unknown command '%s'. Valid commands are 'get_sysinfo', 'set_hsv', 'turn_on', or 'turn_off'.\n", *commandStr)
 		flag.Usage()
 		os.Exit(1)
 	}
