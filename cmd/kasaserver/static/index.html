@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kasa Light Control</title>
+    <style>
+        :root {
+            --primary-color: #007aff;
+            --light-bg: #f5f5f7;
+            --card-bg: #ffffff;
+            --text-color: #333333;
+            --border-radius: 10px;
+            --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--light-bg);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: var(--primary-color);
+            margin: 0;
+        }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #0062cc;
+        }
+
+        button:disabled {
+            background-color: #b3d1ff;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin: 15px 0;
+            padding: 12px;
+            background-color: #e8e8e8;
+            border-radius: var(--border-radius);
+            font-size: 14px;
+        }
+
+        .app-layout {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .app-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .device-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .device-card {
+            background-color: var(--card-bg);
+            border-radius: var(--border-radius);
+            padding: 15px;
+            box-shadow: var(--shadow);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .device-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .device-card.selected {
+            border: 2px solid var(--primary-color);
+        }
+
+        .device-name {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 5px;
+        }
+
+        .device-model {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 5px;
+        }
+
+        .device-ip {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .detail-panel {
+            background-color: var(--card-bg);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            box-shadow: var(--shadow);
+            display: none;
+        }
+
+        .detail-panel.visible {
+            display: block;
+        }
+
+        .device-details {
+            margin-bottom: 20px;
+        }
+
+        .detail-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: var(--primary-color);
+        }
+
+        .detail-item {
+            margin: 10px 0;
+        }
+
+        .controls {
+            margin-top: 25px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .toggle-label {
+            margin-right: 10px;
+            font-weight: 500;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            border-radius: 24px;
+            transition: .4s;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            border-radius: 50%;
+            transition: .4s;
+        }
+
+        input:checked + .slider {
+            background-color: var(--primary-color);
+        }
+
+        input:focus + .slider {
+            box-shadow: 0 0 1px var(--primary-color);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid var(--primary-color);
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #colorControls {
+            display: none;
+        }
+
+        #colorControls label {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        #colorControls input[type="color"] {
+            width: 50px;
+            height: 30px;
+            padding: 0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        #colorControls input[type="range"] {
+            width: 100%;
+            height: 10px;
+            padding: 0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        #colorControls span {
+            display: inline-block;
+            width: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Kasa Light Control</h1>
+            <button id="discoverBtn">Discover Devices</button>
+        </header>
+        
+        <div id="status">Ready - Click "Discover Devices" to begin</div>
+        
+        <div class="app-layout">
+            <div class="device-list" id="deviceList">
+                <!-- Devices will be populated here -->
+                <div class="empty-message">No devices found. Click Discover Devices to scan your network.</div>
+            </div>
+            
+            <div class="detail-panel" id="detailPanel">
+                <div class="detail-content">
+                    <h3 id="detailTitle">Device Details</h3>
+                    <p id="detailAlias">Name: --</p>
+                    <p id="detailModel">Model: --</p>
+                    <p id="detailIP">IP: --</p>
+                    <p id="detailMAC">MAC: --</p>
+                    <p id="detailStatus">Status: --</p>
+                    
+                    <div class="power-toggle-container">
+                        <div class="toggle-container">
+                            <span class="toggle-label">Power:</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="powerToggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div id="colorControls">
+                            <label for="colorPicker">Color:</label>
+                            <input type="color" id="colorPicker" value="#ffffff">
+                            <label for="brightnessSlider">Brightness:</label>
+                            <input type="range" id="brightnessSlider" min="0" max="100" value="100">
+                            <span id="brightnessValue">100</span>%
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // DOM Elements
+        const statusEl = document.getElementById('status');
+        const deviceListEl = document.getElementById('deviceList');
+        const detailPanelEl = document.getElementById('detailPanel');
+        const discoverBtn = document.getElementById('discoverBtn');
+        const powerToggleEl = document.getElementById('powerToggle');
+        const colorPicker = document.getElementById('colorPicker');
+        const brightnessSlider = document.getElementById('brightnessSlider');
+        const brightnessValue = document.getElementById('brightnessValue');
+        const colorControls = document.getElementById('colorControls');
+        
+        // Global state
+        let selectedDevice = null;
+        let selectedDeviceIsColor = false;
+        
+        // Event Listeners
+        discoverBtn.addEventListener('click', () => {
+            discoverDevices();
+        });
+        
+        powerToggleEl.addEventListener('change', togglePowerHandler);
+        
+        colorPicker.addEventListener('change', updateLightState);
+        brightnessSlider.addEventListener('input', () => {
+            brightnessValue.textContent = brightnessSlider.value;
+        });
+        brightnessSlider.addEventListener('change', updateLightState);
+        
+        // UI update functions
+        function updateStatus(message, isLoading = false) {
+            statusEl.textContent = message;
+            if (isLoading) {
+                statusEl.classList.add('loading');
+            } else {
+                statusEl.classList.remove('loading');
+            }
+        }
+        
+        function selectDevice(device) {
+            selectedDevice = device;
+            selectedDeviceIsColor = device.isColor;
+            
+            // Clear previous selection
+            document.querySelectorAll('.device-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            
+            // Select this device
+            const deviceCard = document.querySelector(`.device-card[data-ip="${device.ip}"]`);
+            if (deviceCard) {
+                deviceCard.classList.add('selected');
+            }
+            
+            // Update detail panel
+            document.getElementById('detailTitle').textContent = device.alias;
+            document.getElementById('detailAlias').textContent = `Name: ${device.alias}`;
+            document.getElementById('detailIP').textContent = `IP: ${device.ip}`;
+            document.getElementById('detailMAC').textContent = `MAC: ${device.mac || 'Fetching...'}`;
+            document.getElementById('detailModel').textContent = `Model: ${device.model}`;
+            document.getElementById('detailStatus').textContent = `Status: ${device.status || 'Fetching...'}`;
+            
+            // Update power toggle without triggering change event
+            powerToggleEl.removeEventListener('change', togglePowerHandler);
+            powerToggleEl.checked = device.isOn;
+            setTimeout(() => {
+                powerToggleEl.addEventListener('change', togglePowerHandler);
+            }, 100);
+            
+            // Show detail panel
+            detailPanelEl.classList.add('visible');
+            
+            // Update color controls
+            if (device.isColor) {
+                colorControls.style.display = 'block';
+            } else {
+                colorControls.style.display = 'none';
+            }
+            
+            // Get device details
+            getDeviceDetails(device.ip);
+        }
+        
+        function togglePowerHandler(e) {
+            const isOn = e.target.checked;
+            if (selectedDevice) {
+                setDevicePower(selectedDevice.ip, isOn);
+            }
+        }
+        
+        // --- Color Conversion Utilities ---
+        function rgbToHsv(r, g, b) {
+            let max = Math.max(r, g, b), min = Math.min(r, g, b),
+                d = max - min,
+                h, s, v = max;
+
+            if (d === 0) {
+                h = 0; // achromatic
+            } else {
+                switch (max) {
+                    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                    case g: h = (b - r) / d + 2; break;
+                    case b: h = (r - g) / d + 4; break;
+                }
+                h = Math.round(h * 60);
+                if (h < 0) h += 360;
+            }
+
+            s = max === 0 ? 0 : d / max;
+            s = Math.round(s * 100);
+            v = Math.round((max / 255) * 100);
+            return { h, s, v }; // h: 0-360, s: 0-100, v: 0-100
+        }
+
+        function hsvToRgb(h, s, v) {
+            s /= 100; // Convert S and V to 0-1 range
+            v /= 100;
+            let r, g, b, i, f, p, q, t;
+            if (s === 0) {
+                r = g = b = v; // achromatic
+            } else {
+                h /= 60; // sector 0 to 5
+                i = Math.floor(h);
+                f = h - i; // factorial part of h
+                p = v * (1 - s);
+                q = v * (1 - s * f);
+                t = v * (1 - s * (1 - f));
+                switch (i % 6) {
+                    case 0: r = v; g = t; b = p; break;
+                    case 1: r = q; g = v; b = p; break;
+                    case 2: r = p; g = v; b = t; break;
+                    case 3: r = p; g = q; b = v; break;
+                    case 4: r = t; g = p; b = v; break;
+                    case 5: r = v; g = p; b = q; break;
+                }
+            }
+            return {
+                r: Math.round(r * 255),
+                g: Math.round(g * 255),
+                b: Math.round(b * 255)
+            };
+        }
+
+        function rgbToHex(r, g, b) {
+            return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+        }
+
+        function hexToRgb(hex) {
+            let r = 0, g = 0, b = 0;
+            // 3 digits
+            if (hex.length == 4) {
+                r = "0x" + hex[1] + hex[1];
+                g = "0x" + hex[2] + hex[2];
+                b = "0x" + hex[3] + hex[3];
+            // 6 digits
+            } else if (hex.length == 7) {
+                r = "0x" + hex[1] + hex[2];
+                g = "0x" + hex[3] + hex[4];
+                b = "0x" + hex[5] + hex[6];
+            }
+            return { r: +r, g: +g, b: +b };
+        }
+
+        async function updateLightState() {
+            if (!selectedDevice) return;
+
+            const powerState = powerToggleEl.checked; // Get current power state
+            const hexColor = colorPicker.value;
+            const rgbColor = hexToRgb(hexColor);
+            const hsvColor = rgbToHsv(rgbColor.r, rgbColor.g, rgbColor.b);
+            const brightness = parseInt(brightnessSlider.value, 10);
+
+            const payload = {
+                ip: selectedDevice.ip,
+                on: powerState, // By default, keep current power state. Or set to true if user interacts with color/brightness.
+                hue: hsvColor.h,
+                saturation: hsvColor.s,
+                brightness: brightness, // This is HSV's Value
+                color_temp: 0 // Set to 0 for color mode
+            };
+
+            // If user interacts with color or brightness, we probably want to turn the light on.
+            // We can refine this logic. For now, if these controls are active, ensure 'on' is true.
+            if (selectedDeviceIsColor) { // Only force 'on' if it's a color change for a color bulb
+                 payload.on = true;
+            }
+
+            updateStatus(`Setting ${selectedDevice.alias} power to ${payload.on ? 'on' : 'off'}...`);
+            
+            try {
+                const response = await fetch('/api/set-light-state', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (response.ok && result.status === 'success') {
+                    updateStatus(`Light state updated successfully.`);
+                    // Update UI elements based on response
+                    powerToggleEl.checked = result.on_off === 1;
+                    // Potentially update color picker and brightness slider if the device clamps values
+                    // For now, we assume the device accepts the values as sent.
+                    if (result.brightness !== undefined) {
+                         brightnessSlider.value = result.brightness;
+                         brightnessValue.textContent = result.brightness;
+                    }
+                    // We would need to convert HSV back from device to set colorPicker accurately
+                } else {
+                    updateStatus(`Error: ${result.error || 'Failed to update light state.'}`);
+                }
+            } catch (error) {
+                console.error('Error setting light state:', error);
+                updateStatus('Error sending request to update light state.');
+            }
+        }
+        
+        function renderDeviceList(devices) {
+            // Clear previous list
+            deviceListEl.innerHTML = '';
+            
+            if (devices.length === 0) {
+                deviceListEl.innerHTML = '<div class="empty-message">No devices found. Click Discover Devices to scan your network.</div>';
+                return;
+            }
+            
+            devices.forEach(device => {
+                const deviceCard = document.createElement('div');
+                deviceCard.className = 'device-card';
+                deviceCard.setAttribute('data-ip', device.ip);
+                deviceCard.innerHTML = `
+                    <div class="device-name">${device.alias}</div>
+                    <div class="device-model">${device.model}</div>
+                    <div class="device-ip">${device.ip}</div>
+                `;
+                
+                deviceCard.addEventListener('click', () => selectDevice(device));
+                deviceListEl.appendChild(deviceCard);
+            });
+        }
+        
+        // API functions
+        async function discoverDevices() {
+            updateStatus('Discovering devices...', true);
+            discoverBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/discover');
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+                
+                const devices = await response.json();
+                updateStatus(`Found ${devices.length} devices`);
+                renderDeviceList(devices);
+                
+                // If devices are found, select the first one
+                if (devices.length > 0) {
+                    selectDevice(devices[0]);
+                } else {
+                    detailPanelEl.classList.remove('visible');
+                }
+            } catch (err) {
+                updateStatus(`Discovery failed: ${err.message}`);
+                console.error('Error during discovery:', err);
+            } finally {
+                discoverBtn.disabled = false;
+            }
+        }
+        
+        async function getDeviceDetails(ip) {
+            updateStatus(`Fetching details for ${ip}...`, true);
+            try {
+                const res = await fetch(`/api/device-details?ip=${ip}`);
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({ error: 'Failed to parse error response' }));
+                    throw new Error(errorData.error || `HTTP error ${res.status}`);
+                }
+                const device = await res.json(); // This is the device object from Go with H,S,V fields
+
+                // Update common UI elements
+                document.getElementById('detailAlias').textContent = `Name: ${device.alias}`;
+                document.getElementById('detailModel').textContent = `Model: ${device.model || 'N/A'}`;
+                document.getElementById('detailIP').textContent = `IP: ${device.ip}`;
+                document.getElementById('detailMAC').textContent = `MAC: ${device.mac || 'N/A'}`;
+                document.getElementById('detailStatus').textContent = `Status: ${device.status || 'N/A'}`;
+
+                // Update power toggle state
+                powerToggleEl.removeEventListener('change', togglePowerHandler); // Prevent multiple listeners
+                powerToggleEl.checked = device.isOn;
+                powerToggleEl.disabled = false;
+                setTimeout(() => { // Re-add listener after UI updates to prevent event firing on programmatic change
+                    powerToggleEl.addEventListener('change', togglePowerHandler);
+                }, 100);
+
+                // Update color and brightness controls
+                if (device.isColor) {
+                    colorControls.style.display = 'block';
+                    
+                    const currentHue = device.hue;
+                    const currentSaturation = device.saturation;
+                    const currentBrightness = device.brightness;
+
+                    brightnessSlider.value = (typeof currentBrightness === 'number') ? currentBrightness : 100;
+                    brightnessValue.textContent = brightnessSlider.value;
+                    
+                    if (typeof currentHue === 'number' && typeof currentSaturation === 'number' && typeof currentBrightness === 'number') {
+                        const rgb = hsvToRgb(currentHue, currentSaturation, currentBrightness);
+                        colorPicker.value = rgbToHex(rgb.r, rgb.g, rgb.b);
+                    } else {
+                        // Default if color state is not fully defined (e.g. bulb is in white mode, or error)
+                        // Kasa bulbs often report H=0, S=0 when in white mode. Brightness is still relevant.
+                        // An HSV->RGB conversion with H=0,S=0 gives a shade of gray/white if V is high.
+                        const defaultWhiteRgb = hsvToRgb(0, 0, currentBrightness !== undefined ? currentBrightness : 100);
+                        colorPicker.value = rgbToHex(defaultWhiteRgb.r, defaultWhiteRgb.g, defaultWhiteRgb.b);
+                    }
+                } else {
+                    colorControls.style.display = 'none';
+                }
+
+                updateStatus(`${device.alias} details loaded.`);
+            } catch (err) {
+                updateStatus(`Error fetching device details: ${err.message}`);
+                console.error('Error fetching device details:', err);
+            }
+        }
+        
+        async function setDevicePower(deviceIP, isOn) {
+            updateStatus(`Setting ${selectedDevice.alias} power to ${isOn ? 'on' : 'off'}...`);
+            
+            try {
+                const response = await fetch('/api/set-power', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ip: deviceIP,
+                        isOn: isOn
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                updateStatus(result.message);
+                
+                // Update the device status in our UI
+                if (selectedDevice && selectedDevice.ip === deviceIP) {
+                    selectedDevice.isOn = isOn;
+                    selectedDevice.status = `${selectedDevice.alias} is ${isOn ? 'on' : 'off'}`;
+                    document.getElementById('detailStatus').textContent = `Status: ${selectedDevice.status}`;
+                }
+                
+            } catch (err) {
+                updateStatus(`Failed to set power: ${err.message}`);
+                console.error('Error setting power:', err);
+                
+                // Revert toggle switch
+                powerToggleEl.removeEventListener('change', togglePowerHandler);
+                powerToggleEl.checked = !isOn;
+                setTimeout(() => {
+                    powerToggleEl.addEventListener('change', togglePowerHandler);
+                }, 100);
+            }
+        }
+    </script>
+</body>
+</html>
