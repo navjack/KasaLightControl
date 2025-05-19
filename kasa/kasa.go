@@ -23,6 +23,55 @@ type DiscoveredDevice struct {
 	// We can add more fields from sysinfo if needed, e.g., deviceId, MAC
 }
 
+// KasaLightState represents the light state object from Kasa responses.
+type KasaLightState struct {
+	OnOff      int    `json:"on_off"`
+	Mode       string `json:"mode,omitempty"`
+	Hue        int    `json:"hue,omitempty"`
+	Saturation int    `json:"saturation,omitempty"`
+	Brightness int    `json:"brightness,omitempty"`
+	ColorTemp  int    `json:"color_temp,omitempty"`
+	ErrCode    int    `json:"err_code,omitempty"` // Present in transition_light_state, not usually in light_state sub-object of get_sysinfo
+}
+
+// KasaSystemInfo represents the detailed system information from a Kasa device.
+type KasaSystemInfo struct {
+	SwVer      string          `json:"sw_ver"`
+	HwVer      string          `json:"hw_ver"`
+	Model      string          `json:"model"`
+	DeviceID   string          `json:"deviceId"`
+	OemID      string          `json:"oemId"`
+	HwID       string          `json:"hwId"`
+	RSSI       int             `json:"rssi"`
+	LatitudeI  int             `json:"latitude_i,omitempty"`  // omitempty as it might not always be set or relevant
+	LongitudeI int             `json:"longitude_i,omitempty"` // omitempty as it might not always be set or relevant
+	Alias      string          `json:"alias"`
+	MicType    string          `json:"mic_type"` // e.g., "IOT.SMARTBULB"
+	Feature    string          `json:"feature,omitempty"` // e.g., "TIM:ENE"
+	Mac        string          `json:"mac,omitempty"`     // Sometimes under mic_mac, sometimes just mac
+	MicMac     string          `json:"mic_mac,omitempty"` // Physical MAC address
+	IsDimmable int             `json:"is_dimmable,omitempty"`
+	IsColor    int             `json:"is_color,omitempty"`
+	IsVariableColorTemp int    `json:"is_variable_color_temp,omitempty"`
+	LightState *KasaLightState `json:"light_state,omitempty"` // Pointer, as not all devices have light_state (e.g., plugs)
+	ErrCode    int             `json:"err_code"`
+	// We can add more fields like preferred_state, ctrl_protocols, etc. if needed
+}
+
+// GetSysinfoResponseWrapper is a helper to unmarshal the full get_sysinfo response.
+type GetSysinfoResponseWrapper struct {
+	System struct {
+		GetSysinfo KasaSystemInfo `json:"get_sysinfo"`
+	} `json:"system"`
+}
+
+// TransitionLightStateResponseWrapper is a helper to unmarshal the full transition_light_state response.
+type TransitionLightStateResponseWrapper struct {
+	SmartlifeIoTSmartbulbLightingservice struct {
+		TransitionLightState KasaLightState `json:"transition_light_state"`
+	} `json:"smartlife.iot.smartbulb.lightingservice"`
+}
+
 // encrypt performs XOR encryption on the plaintext string.
 // The Kasa protocol prepends the 4-byte big-endian length of the
 // original plaintext *before* encryption, but this function only returns the encrypted payload.
@@ -224,4 +273,77 @@ func DiscoverDevices(timeout time.Duration) ([]DiscoveredDevice, error) {
 	}
 
 	return discoveredList, nil
+}
+
+// GetSysInfo retrieves and parses the system information from a Kasa device.
+func GetSysInfo(ip string) (*KasaSystemInfo, error) {
+	command := map[string]interface{}{
+		"system": map[string]interface{}{
+			"get_sysinfo": nil,
+		},
+	}
+
+	responseMap, err := SendCommand(ip, command)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send get_sysinfo command: %w", err)
+	}
+
+	// Convert map to JSON bytes, then unmarshal to struct
+	// This is a common pattern if the initial response is already a map from SendCommand
+	jsonBytes, err := json.Marshal(responseMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response map to JSON: %w", err)
+	}
+
+	var typedResponse GetSysinfoResponseWrapper
+	if err := json.Unmarshal(jsonBytes, &typedResponse); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON to GetSysinfoResponseWrapper: %w", err)
+	}
+
+	sysInfo := typedResponse.System.GetSysinfo
+	if sysInfo.ErrCode != 0 {
+		return &sysInfo, fmt.Errorf("Kasa device reported error for get_sysinfo - code: %d", sysInfo.ErrCode)
+	}
+
+	// If mic_mac is present and mac is not, populate mac for convenience if it's typically expected.
+	if sysInfo.Mac == "" && sysInfo.MicMac != "" {
+		sysInfo.Mac = sysInfo.MicMac
+	}
+
+	return &sysInfo, nil
+}
+
+// SetLightState sends a command to change the light state of a Kasa bulb.
+// desiredLightState should be a map representing the state to set,
+// e.g., {"on_off": 1, "brightness": 50}.
+func SetLightState(ip string, desiredLightState map[string]interface{}) (*KasaLightState, error) {
+	commandPayload := map[string]interface{}{
+		"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
+			"transition_light_state": desiredLightState,
+		},
+	}
+
+	responseMap, err := SendCommand(ip, commandPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send set_light_state command: %w", err)
+	}
+
+	// Convert map to JSON bytes, then unmarshal to struct
+	jsonBytes, err := json.Marshal(responseMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response map to JSON for SetLightState: %w", err)
+	}
+
+	var typedResponse TransitionLightStateResponseWrapper
+	if err := json.Unmarshal(jsonBytes, &typedResponse); err != nil {
+		// Potentially log decryptedResponse for debugging if needed here
+		return nil, fmt.Errorf("failed to unmarshal JSON to TransitionLightStateResponseWrapper: %w", err)
+	}
+
+	returnedState := typedResponse.SmartlifeIoTSmartbulbLightingservice.TransitionLightState
+	if returnedState.ErrCode != 0 {
+		return &returnedState, fmt.Errorf("Kasa device reported error for set_light_state - code: %d", returnedState.ErrCode)
+	}
+
+	return &returnedState, nil
 }

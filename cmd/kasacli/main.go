@@ -32,17 +32,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	var commandPayload interface{}
 	var actionDescription string
+	var desiredLightState map[string]interface{} // To hold the state for SetLightState func
 
 	switch *commandStr {
 	case "get_sysinfo":
 		actionDescription = fmt.Sprintf("Attempting to get system info from bulb at %s...", *bulbIP)
-		commandPayload = map[string]interface{}{
-			"system": map[string]interface{}{
-				"get_sysinfo": nil,
-			},
+		fmt.Println(actionDescription)
+		sysInfo, err := kasa.GetSysInfo(*bulbIP)
+		if err != nil {
+			fmt.Printf("Error getting system info: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Println("Successfully retrieved system info:")
+		fmt.Printf("  Alias: %s\n", sysInfo.Alias)
+		fmt.Printf("  Model: %s (HW: %s, SW: %s)\n", sysInfo.Model, sysInfo.HwVer, sysInfo.SwVer)
+		fmt.Printf("  Device ID: %s\n", sysInfo.DeviceID)
+		fmt.Printf("  MAC Address: %s\n", sysInfo.Mac)
+		fmt.Printf("  RSSI: %d\n", sysInfo.RSSI)
+		if sysInfo.LightState != nil {
+			fmt.Println("  Light State:")
+			fmt.Printf("    On: %t\n", sysInfo.LightState.OnOff == 1)
+			if sysInfo.IsColor == 1 {
+				fmt.Printf("    Mode: %s, Hue: %d, Saturation: %d, Brightness: %d\n", sysInfo.LightState.Mode, sysInfo.LightState.Hue, sysInfo.LightState.Saturation, sysInfo.LightState.Brightness)
+			}
+			if sysInfo.IsVariableColorTemp == 1 {
+				fmt.Printf("    Color Temp: %dK\n", sysInfo.LightState.ColorTemp)
+			}
+			// If only dimmable and not color/temp (e.g. some white bulbs)
+			if sysInfo.IsColor != 1 && sysInfo.IsVariableColorTemp != 1 && sysInfo.IsDimmable == 1 {
+				fmt.Printf("    Brightness: %d\n", sysInfo.LightState.Brightness)
+			}
+		}
+		// No need to call SendCommand for get_sysinfo as GetSysInfo handles it.
+		return // Exit after handling get_sysinfo
 	case "set_hsv":
 		if *hue == -1 || *sat == -1 || *val == -1 {
 			fmt.Println("Error: For set_hsv, -hue, -sat, and -val flags are required.")
@@ -62,49 +85,34 @@ func main() {
 			os.Exit(1)
 		}
 		actionDescription = fmt.Sprintf("Attempting to set HSV (H:%d, S:%d, V:%d, T:%dms) on bulb at %s...", *hue, *sat, *val, *transition, *bulbIP)
-		state := map[string]interface{}{
+		desiredLightState = map[string]interface{}{
 			"on_off":         1, // Ensure bulb is on when setting color
 			"ignore_default": 1,
 			"hue":            *hue,
 			"saturation":     *sat,
-			"brightness":     *val, // Kasa API uses 'brightness' for the V in HSV
-			"color_temp":     0,    // Must be 0 for HSV mode
+			"brightness":     *val,
+			"color_temp":     0,
 		}
 		if *transition > 0 {
-			state["transition_period"] = *transition
-		}
-		commandPayload = map[string]interface{}{
-			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": state,
-			},
+			desiredLightState["transition_period"] = *transition
 		}
 	case "turn_on":
 		actionDescription = fmt.Sprintf("Attempting to turn ON bulb at %s (T:%dms)...", *bulbIP, *transition)
-		state := map[string]interface{}{
+		desiredLightState = map[string]interface{}{
 			"on_off":         1,
 			"ignore_default": 1,
 		}
 		if *transition > 0 {
-			state["transition_period"] = *transition
-		}
-		commandPayload = map[string]interface{}{
-			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": state,
-			},
+			desiredLightState["transition_period"] = *transition
 		}
 	case "turn_off":
 		actionDescription = fmt.Sprintf("Attempting to turn OFF bulb at %s (T:%dms)...", *bulbIP, *transition)
-		state := map[string]interface{}{
+		desiredLightState = map[string]interface{}{
 			"on_off":         0,
 			"ignore_default": 1,
 		}
 		if *transition > 0 {
-			state["transition_period"] = *transition
-		}
-		commandPayload = map[string]interface{}{
-			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": state,
-			},
+			desiredLightState["transition_period"] = *transition
 		}
 	case "set_brightness":
 		if *val == -1 {
@@ -117,21 +125,13 @@ func main() {
 			os.Exit(1)
 		}
 		actionDescription = fmt.Sprintf("Attempting to set brightness to %d%% (T:%dms) on bulb at %s...", *val, *transition, *bulbIP)
-		state := map[string]interface{}{
-			"on_off":         1, // Ensure bulb is on
+		desiredLightState = map[string]interface{}{
+			"on_off":         1,
 			"ignore_default": 1,
 			"brightness":     *val,
-			// When setting brightness alone, we don't want to change color mode explicitly
-			// So, we don't set hue, saturation, or color_temp unless they are already part of the bulb's current state concept for brightness adjustment.
-			// For simplicity, we'll let the bulb decide how to interpret brightness-only changes.
 		}
 		if *transition > 0 {
-			state["transition_period"] = *transition
-		}
-		commandPayload = map[string]interface{}{
-			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": state,
-			},
+			desiredLightState["transition_period"] = *transition
 		}
 	case "set_colortemp":
 		if *kelvin == -1 {
@@ -139,12 +139,11 @@ func main() {
 			flag.Usage()
 			os.Exit(1)
 		}
-		// Add Kelvin range validation if desired, e.g., 2500-9000
-		if *kelvin < 2000 || *kelvin > 9000 { // Broad range, specific bulbs may vary
+		if *kelvin < 2000 || *kelvin > 9000 {
 			fmt.Println("Error: Kelvin must be within a reasonable range (e.g., 2000-9000).")
 			os.Exit(1)
 		}
-		valForTemp := 100 // Default to 100% brightness if -val not specified or use it if specified and valid
+		valForTemp := 100
 		if *val != -1 {
 			if *val < 0 || *val > 100 {
 				fmt.Println("Error: Value/Brightness for color temperature must be between 0 and 100.")
@@ -153,21 +152,16 @@ func main() {
 			valForTemp = *val
 		}
 		actionDescription = fmt.Sprintf("Attempting to set color temperature to %dK at %d%% brightness (T:%dms) on bulb at %s...", *kelvin, valForTemp, *transition, *bulbIP)
-		state := map[string]interface{}{
-			"on_off":         1, // Ensure bulb is on
+		desiredLightState = map[string]interface{}{
+			"on_off":         1,
 			"ignore_default": 1,
 			"color_temp":     *kelvin,
 			"brightness":     valForTemp,
-			"hue":            0, // When setting color temp, hue/sat are not used
-			"saturation":     0, // and should be set to 0 to indicate non-color mode.
+			"hue":            0,
+			"saturation":     0,
 		}
 		if *transition > 0 {
-			state["transition_period"] = *transition
-		}
-		commandPayload = map[string]interface{}{
-			"smartlife.iot.smartbulb.lightingservice": map[string]interface{}{
-				"transition_light_state": state,
-			},
+			desiredLightState["transition_period"] = *transition
 		}
 	case "discover":
 		actionDescription = "Attempting to discover Kasa devices on the network..."
@@ -192,17 +186,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Only run SendCommand if it's not a discover or get_sysinfo (already handled) command
 	fmt.Println(actionDescription)
 
-	response, err := kasa.SendCommand(*bulbIP, commandPayload)
+	// Call SetLightState for commands that modify the light state
+	returnedLightState, err := kasa.SetLightState(*bulbIP, desiredLightState)
 	if err != nil {
-		fmt.Printf("Error sending command: %v\n", err)
+		fmt.Printf("Error setting light state: %v\n", err)
+		if returnedLightState != nil && returnedLightState.ErrCode != 0 {
+			// Kasa device might have returned an error code that SetLightState also wrapped
+			fmt.Printf("  Kasa device error code: %d\n", returnedLightState.ErrCode)
+		}
 		os.Exit(1)
 	}
 
-	fmt.Println("Successfully received response:")
-	// For now, just print the map directly for simplicity
-	for key, val := range response {
-		fmt.Printf("%s: %v\n", key, val)
+	fmt.Println("Successfully set light state. Current state from device:")
+	fmt.Printf("  On: %t\n", returnedLightState.OnOff == 1)
+	fmt.Printf("  Mode: %s\n", returnedLightState.Mode)
+	fmt.Printf("  Brightness: %d\n", returnedLightState.Brightness)
+	if returnedLightState.ColorTemp > 0 {
+		fmt.Printf("  Color Temp: %dK\n", returnedLightState.ColorTemp)
+		fmt.Printf("  Hue: %d, Saturation: %d (should be 0 if color temp is active)\n", returnedLightState.Hue, returnedLightState.Saturation)
+	} else {
+		fmt.Printf("  Hue: %d, Saturation: %d\n", returnedLightState.Hue, returnedLightState.Saturation)
+	}
+	if returnedLightState.ErrCode != 0 { // Should be caught by SetLightState, but good for verbosity
+		fmt.Printf("  Device reported error code: %d\n", returnedLightState.ErrCode)
 	}
 }
