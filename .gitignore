@@ -11,6 +11,10 @@
 # Output of the go coverage tool, specifically when run with the -o flag
 *.out
 
+# Project-specific build artifacts
+kasaserver
+cmd/kasaserver/kasaserver
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

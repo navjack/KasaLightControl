@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"github.com/user/kasalightcontrol/kasa"
 	"log"
 	"net/http"
 	"os"
@@ -17,16 +17,29 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
+	"github.com/user/kasalightcontrol/kasa"
 )
 
 const (
-	port = 8080
+	defaultPort = 8080
 )
 
-// global server instance to allow shutdown
-var server *http.Server
+var (
+	deviceDetailsCache      map[string]Device
+	naturalLightSyncDevices map[string]bool
+	lastFetchedTime         map[string]time.Time
+	deviceDetailsMutex      sync.RWMutex
+	naturalLightSyncMutex   sync.Mutex
+	serverInstance          *http.Server // Global server instance for shutdown
+	portFlag                *int         // Command-line flag for port
+)
 
-// Device represents a Kasa device with relevant info for the UI
+func init() {
+	// Define command-line flag for the port
+	portFlag = flag.Int("port", 8080, "Port for the server to listen on")
+}
+
 type Device struct {
 	DeviceID     string `json:"deviceId"`
 	Model        string `json:"model"`
@@ -45,17 +58,6 @@ type Device struct {
 	IsNaturalLightActive bool `json:"isNaturalLightActive,omitempty"` // For UI to know NLS status
 }
 
-// global variables
-var (
-	discoveredDevices      []kasa.DiscoveredDevice
-	discoveredDevicesMutex = &sync.Mutex{}
-	deviceDetailsCache     = make(map[string]Device) // Cache for device details {ip: Device}
-	deviceDetailsMutex     = &sync.Mutex{}
-)
-
-// --- Natural Light Sync Feature ---
-
-// NaturalLightPoint defines a point in the day for color temperature and brightness.
 type NaturalLightPoint struct {
 	Hour       int // Hour of the day (0-23)
 	Minute     int // Minute of the hour (0-59)
@@ -63,23 +65,27 @@ type NaturalLightPoint struct {
 	Brightness int // Percent (0-100)
 }
 
-// Define the daily light cycle curve.
-// These points should be sorted by time.
-var naturalLightCurve = []NaturalLightPoint{
-	{Hour: 0, Minute: 0, ColorTemp: 2200, Brightness: 5},   // Midnight
-	{Hour: 6, Minute: 0, ColorTemp: 2700, Brightness: 10},  // Sunrise start
-	{Hour: 7, Minute: 30, ColorTemp: 3500, Brightness: 40}, // Morning
-	{Hour: 9, Minute: 0, ColorTemp: 4500, Brightness: 70},  // Late Morning
-	{Hour: 12, Minute: 0, ColorTemp: 6000, Brightness: 100}, // Solar Noon
-	{Hour: 15, Minute: 0, ColorTemp: 5000, Brightness: 80}, // Afternoon
-	{Hour: 17, Minute: 0, ColorTemp: 4000, Brightness: 60}, // Late Afternoon
-	{Hour: 18, Minute: 30, ColorTemp: 3000, Brightness: 40}, // Sunset
-	{Hour: 21, Minute: 0, ColorTemp: 2500, Brightness: 15}, // Evening
-	{Hour: 22, Minute: 30, ColorTemp: 2200, Brightness: 5},  // Late Evening
-}
+var (
+	discoveredDevices      []kasa.DiscoveredDevice
+	discoveredDevicesMutex = &sync.Mutex{}
+	naturalLightCurve      = []NaturalLightPoint{
+		{Hour: 0, Minute: 0, ColorTemp: 2200, Brightness: 5},   // Midnight
+		{Hour: 6, Minute: 0, ColorTemp: 2700, Brightness: 10},  // Sunrise start
+		{Hour: 7, Minute: 30, ColorTemp: 3500, Brightness: 40}, // Morning
+		{Hour: 9, Minute: 0, ColorTemp: 4500, Brightness: 70},  // Late Morning
+		{Hour: 12, Minute: 0, ColorTemp: 6000, Brightness: 100}, // Solar Noon
+		{Hour: 15, Minute: 0, ColorTemp: 5000, Brightness: 80}, // Afternoon
+		{Hour: 17, Minute: 0, ColorTemp: 4000, Brightness: 60}, // Late Afternoon
+		{Hour: 18, Minute: 30, ColorTemp: 3000, Brightness: 40}, // Sunset
+		{Hour: 21, Minute: 0, ColorTemp: 2500, Brightness: 15}, // Evening
+		{Hour: 22, Minute: 30, ColorTemp: 2200, Brightness: 5},  // Late Evening
+	}
+	naturalLightUpdateInterval = 5 * time.Minute // How often to update
+	naturalLightTransitionPeriod = 5000        // 5 seconds in milliseconds
+	naturalLightTicker      *time.Ticker
+	naturalLightStopChan    chan struct{}
+)
 
-// calculateNaturalLightState calculates the target color temperature and brightness
-// for the given time by interpolating along the naturalLightCurve.
 func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
 	// Ensure naturalLightCurve is sorted by time (should be done at startup once)
 	// For safety, could re-sort or check here, but assume sorted for performance.
@@ -158,20 +164,6 @@ func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
 	return ct, br
 }
 
-// --- End Natural Light Sync Feature ---
-
-// --- Backend Management for Natural Light Sync ---
-var (
-	naturalLightSyncDevices = make(map[string]bool) // IP -> enabled
-	naturalLightSyncMutex   = &sync.Mutex{}
-	naturalLightTicker      *time.Ticker
-	naturalLightStopChan    chan struct{}
-)
-
-const naturalLightUpdateInterval = 5 * time.Minute // How often to update
-const naturalLightTransitionPeriod = 5000        // 5 seconds in milliseconds
-
-// startNaturalLightSyncManager initializes and starts the background process.
 func startNaturalLightSyncManager() {
 	// Ensure naturalLightCurve is sorted by time at startup
 	sort.Slice(naturalLightCurve, func(i, j int) bool {
@@ -198,7 +190,6 @@ func startNaturalLightSyncManager() {
 	}()
 }
 
-// stopNaturalLightSyncManager stops the background process.
 func stopNaturalLightSyncManager() {
 	if naturalLightStopChan != nil {
 		// Check if channel is already closed to prevent panic
@@ -259,9 +250,6 @@ func updateAllNaturalLightDevices() {
 	}
 }
 
-// handleSetNaturalLightMode toggles the natural light sync for a device.
-// POST /api/device/{ip}/natural-light
-// Body: {"enable": true/false}
 func handleSetNaturalLightMode(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ip := vars["ip"]
@@ -317,8 +305,6 @@ func handleSetNaturalLightMode(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Natural Light Sync for %s set to %v", ip, reqBody.Enable)
 }
 
-// --- End Backend Management ---
-
 func setupRoutes() *mux.Router {
 	r := mux.NewRouter()
 
@@ -339,44 +325,60 @@ func setupRoutes() *mux.Router {
 	return r
 }
 
+func startServer(port int) {
+	r := setupRoutes()
+
+	serverInstance = &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: r,
+	}
+
+	log.Printf("Server listening on port %d", port)
+	log.Printf("Web UI available at http://localhost:%d", port)
+
+	go func() {
+		if err := serverInstance.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
+	openBrowser(fmt.Sprintf("http://localhost:%d", port))
+}
+
 func main() {
-	log.Println("Starting Kasa Light Control Server...")
+	flag.Parse() // Parse command-line flags
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Kasa Light Control Server starting...")
+
+	// Initialize caches and maps
+	deviceDetailsCache = make(map[string]Device)
+	lastFetchedTime = make(map[string]time.Time)
+	naturalLightSyncDevices = make(map[string]bool)
 
 	startNaturalLightSyncManager() // Start the natural light sync manager
 
-	r := setupRoutes()
-
-	server = &http.Server{
-		Addr:    ":8080",
-		Handler: r, // Use Gorilla Mux router
-	}
-
-	log.Println("Kasa Light Control server starting on http://localhost:8080")
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Could not listen on %s: %v\n", server.Addr, err)
-		}
-	}()
-	openBrowser("http://localhost:8080")
+	startServer(*portFlag) // Start the HTTP server with the configured port
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+
 	log.Println("Shutting down server...")
 	stopNaturalLightSyncManager() // Stop the natural light sync manager
 
+	// Create a deadline to wait for.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if serverInstance != nil {
+		if err := serverInstance.Shutdown(ctx); err != nil {
+			log.Fatalf("Server Shutdown Failed:%+v", err)
+		}
 	}
-
-	log.Println("Server exiting")
+	log.Println("Server shutdown complete. Exiting application.")
 }
 
-// openBrowser tries to open the URL in a browser
 func openBrowser(url string) {
 	time.Sleep(500 * time.Millisecond) // Give server a moment to start
 	var err error
@@ -395,7 +397,6 @@ func openBrowser(url string) {
 	}
 }
 
-// handleDiscover initiates discovery and returns status.
 func handleDiscover(w http.ResponseWriter, r *http.Request) {
 	log.Println("API: Discovering devices...")
 
@@ -523,7 +524,6 @@ func getDeviceDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(detailedDevice)
 }
 
-// handleGetDevices returns a list of all currently known/cached devices.
 func handleGetDevices(w http.ResponseWriter, r *http.Request) {
 	deviceDetailsMutex.Lock()
 	devices := make([]Device, 0, len(deviceDetailsCache))
@@ -541,7 +541,6 @@ func handleGetDevices(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(devices)
 }
 
-// handleSetPower sets the power state of a Kasa device
 func handleSetPower(w http.ResponseWriter, r *http.Request) {
 	var reqBody struct {
 		IP    string `json:"ip"`
@@ -577,7 +576,6 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Power state set for %s", reqBody.IP)
 }
 
-// handleSetLightState sets the light state of a Kasa device
 func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -680,7 +678,6 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Light state set for %s", ip)
 }
 
-// handleShutdown gracefully shuts down the server
 func handleShutdown(w http.ResponseWriter, r *http.Request) {
 	log.Println("Shutdown request received")
 	w.WriteHeader(http.StatusOK)
@@ -693,7 +690,7 @@ func handleShutdown(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		// Give a moment for the HTTP response to be sent
 		time.Sleep(1 * time.Second)
-		if err := server.Shutdown(ctx); err != nil {
+		if err := serverInstance.Shutdown(ctx); err != nil {
 			log.Printf("Error during server shutdown: %v", err)
 		}
 		log.Println("Server shutdown complete. Exiting application.")
