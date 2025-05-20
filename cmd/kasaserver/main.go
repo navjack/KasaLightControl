@@ -295,27 +295,26 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		desiredState["on_off"] = 0
 	}
 
-	// Only include color/brightness parameters if they are likely intended for color mode
-	// If color_temp is explicitly set to a non-zero value, it implies white mode.
-	// If hue/saturation/brightness are set, we assume color mode.
-	if req.Hue != 0 || req.Saturation != 0 || req.Brightness != 0 {
+	// Determine mode based on request
+	if req.ColorTemp > 0 { // Explicit request for white mode
+		desiredState["color_temp"] = req.ColorTemp
+		desiredState["hue"] = 0        // Kasa bulbs expect hue/sat to be 0 for temp mode
+		desiredState["saturation"] = 0 
+		if req.Brightness != 0 { // Brightness is valid in white mode
+			desiredState["brightness"] = req.Brightness
+		} else {
+			// If brightness is 0 in the request, and bulb is being turned on,
+			// Kasa might default to a previous brightness or not light up.
+			// Frontend should ideally always send a valid brightness (e.g., current slider value > 0 if 'on').
+			// If req.On is true and req.Brightness is 0, this might be an issue.
+			// For now, we are trusting the incoming req.Brightness. If it's 0, it's sent as 0.
+		}
+	} else { // Color mode (hue/saturation/brightness take precedence)
 		desiredState["hue"] = req.Hue
 		desiredState["saturation"] = req.Saturation
 		desiredState["brightness"] = req.Brightness
 		desiredState["color_temp"] = 0 // Crucial for color mode
-	} else if req.ColorTemp > 0 { // If only color_temp is specified (for white mode)
-		desiredState["color_temp"] = req.ColorTemp
-		// Brightness can also be set in white mode
-		if req.Brightness != 0 {
-			desiredState["brightness"] = req.Brightness
-		}
-		// Remove color params if we are setting a specific white temperature
-		delete(desiredState, "hue")
-		delete(desiredState, "saturation")
 	}
-
-	// If only on_off is changing, and no color/brightness/temp details are provided,
-	// it will just toggle power. If other params are present, they take precedence.
 
 	log.Printf("Setting light state for %s: %+v", req.IP, desiredState)
 
