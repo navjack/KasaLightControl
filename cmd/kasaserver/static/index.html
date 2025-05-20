@@ -310,6 +310,14 @@
                             </label>
                         </div>
                         
+                        <div class="toggle-container"> {{-- NLS Toggle --}}
+                            <span class="toggle-label">Natural Light Sync:</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="nlsToggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        
                         <div id="colorControls">
                             <div id="modeSwitchContainer" style="margin-bottom: 10px; display: none;">
                                 <label style="margin-right: 15px;">
@@ -356,6 +364,7 @@
         const modeSwitchContainer = document.getElementById('modeSwitchContainer');
         const modeColorRadio = document.getElementById('modeColorRadio');
         const modeTempRadio = document.getElementById('modeTempRadio');
+        const nlsToggleEl = document.getElementById('nlsToggle'); // NLS Toggle element
         
         // Global state
         let selectedDevice = null;
@@ -399,6 +408,8 @@
         
         colorPicker.addEventListener('input', handleColorChange);
         
+        nlsToggleEl.addEventListener('change', toggleNLSMasterHandler); // Event listener for NLS toggle
+        
         // UI update functions
         function updateStatus(message, isLoading = false) {
             statusEl.textContent = message;
@@ -428,13 +439,13 @@
             document.getElementById('detailTitle').textContent = device.alias;
             document.getElementById('detailAlias').textContent = `Name: ${device.alias}`;
             document.getElementById('detailIP').textContent = `IP: ${device.ip}`;
-            document.getElementById('detailMAC').textContent = `MAC: ${device.mac || 'Fetching...'}`;
+            document.getElementById('detailMAC').textContent = `MAC: ${device.macAddress || 'Fetching...'}`; // Corrected: macAddress
             document.getElementById('detailModel').textContent = `Model: ${device.model}`;
-            document.getElementById('detailStatus').textContent = `Status: ${device.status || 'Fetching...'}`;
+            document.getElementById('detailStatus').textContent = `Status: ${device.status || 'Fetching...'}`; // Corrected: status
             
             // Update power toggle without triggering change event
             powerToggleEl.removeEventListener('change', togglePowerHandler);
-            powerToggleEl.checked = device.isOn;
+            powerToggleEl.checked = device.powerState; // Corrected: powerState
             setTimeout(() => {
                 powerToggleEl.addEventListener('change', togglePowerHandler);
             }, 100);
@@ -529,22 +540,22 @@
         async function getDeviceDetails(ip) {
             updateStatus(`Fetching ${ip} details...`);
             try {
-                const res = await fetch(`/api/device-details?ip=${ip}`);
+                const res = await fetch(`/api/device/${ip}/details`); // Corrected URL
                 if (!res.ok) {
                     throw new Error(`HTTP error! status: ${res.status}`);
                 }
                 const details = await res.json(); 
 
                 // Update global selectedDeviceIsColor with accurate data
-                selectedDeviceIsColor = details.is_color;
+                selectedDeviceIsColor = details.isColor; // Corrected: isColor
 
                 document.getElementById('detailTitle').textContent = details.alias || 'Device Details';
                 document.getElementById('detailAlias').textContent = `Name: ${details.alias}`; 
                 document.getElementById('detailModel').textContent = `Model: ${details.model || 'N/A'}`;
                 document.getElementById('detailIP').textContent = `IP: ${details.ip}`;
-                document.getElementById('detailMAC').textContent = `MAC: ${details.mac_address || 'N/A'}`;
-                document.getElementById('detailStatus').textContent = `Status: ${details.relay_state ? 'On' : 'Off'}`;
-                document.getElementById('powerToggle').checked = details.relay_state;
+                document.getElementById('detailMAC').textContent = `MAC: ${details.macAddress || 'N/A'}`; // Corrected: macAddress
+                document.getElementById('detailStatus').textContent = `Status: ${details.status || 'N/A'}`; // Corrected: status
+                document.getElementById('powerToggle').checked = details.powerState; // Corrected: powerState
                 document.getElementById('detailPanel').classList.add('visible');
 
                 const colorControlsEl = document.getElementById('colorControls');
@@ -557,6 +568,7 @@
                 const colorTempSliderEl = document.getElementById('colorTempSlider');
                 const colorTempValueEl = document.getElementById('colorTempValue');
                 const modeSwitchContainerEl = document.getElementById('modeSwitchContainer');
+                const nlsToggle = document.getElementById('nlsToggle'); // Get NLS toggle
 
                 // Default to hiding all optional controls initially within the detail panel update
                 colorControlsEl.style.display = 'none'; // Hide main container first
@@ -570,10 +582,10 @@
 
                 isUpdatingProgrammatically = true; // Prevent mode switch handler from firing immediately
 
-                if (details.is_color || details.is_dimmable) {
+                if (details.isColor || details.isDimmer) { // Corrected: isColor, isDimmer
                     colorControlsEl.style.display = 'block'; // Show the main container for controls
 
-                    if (details.is_dimmable) {
+                    if (details.isDimmer) { // Corrected: isDimmer
                         brightnessSliderEl.style.display = 'block'; 
                         if (brightnessLabelEl) brightnessLabelEl.style.display = 'block';
                         if (brightnessValueEl) brightnessValueEl.style.display = 'inline';
@@ -581,18 +593,18 @@
                         brightnessValueEl.textContent = details.brightness !== undefined ? details.brightness : 100;
                     }
 
-                    if (details.is_color) {
+                    if (details.isColor) { // Corrected: isColor
                         modeSwitchContainerEl.style.display = 'block';
 
-                        if (details.color_temp && details.color_temp > 0) { // Device is in color temperature mode
+                        if (details.colorTemp && details.colorTemp > 0) { // Device is in color temperature mode // Corrected: colorTemp
                             modeTempRadio.checked = true;
                             colorPickerEl.style.display = 'inline-block'; // Keep it visible but disabled
                             if (colorPickerLabelEl) colorPickerLabelEl.style.display = 'block';
                             colorPickerEl.disabled = true;
                             colorTempContainerEl.style.display = 'block';
                             colorTempSliderEl.disabled = false;
-                            colorTempSliderEl.value = details.color_temp;
-                            colorTempValueEl.textContent = details.color_temp + 'K';
+                            colorTempSliderEl.value = details.colorTemp; // Corrected: colorTemp
+                            colorTempValueEl.textContent = details.colorTemp + 'K'; // Corrected: colorTemp
                             const whiteHex = rgbToHex(hsvToRgb(0, 0, 100).r, hsvToRgb(0, 0, 100).g, hsvToRgb(0, 0, 100).b);
                             colorPickerEl.value = whiteHex;
                         } else { // Device is in color (HSB) mode
@@ -605,12 +617,12 @@
                             const hsbBrightness = details.brightness !== undefined ? details.brightness : (details.saturation === 0 ? 100 : (details.value || 100)); 
                             const initialColor = hsvToRgb(details.hue || 0, details.saturation || 0, hsbBrightness);
                             colorPickerEl.value = rgbToHex(initialColor.r, initialColor.g, initialColor.b);
-                            if (details.is_dimmable) {
+                            if (details.isDimmer) {
                                 brightnessSliderEl.value = hsbBrightness;
                                 brightnessValueEl.textContent = hsbBrightness;
                             }
-                            colorTempSliderEl.value = details.color_temp > 0 ? details.color_temp : 4000; 
-                            colorTempValueEl.textContent = (details.color_temp > 0 ? details.color_temp : 4000) + 'K';
+                            colorTempSliderEl.value = details.colorTemp > 0 ? details.colorTemp : 4000; 
+                            colorTempValueEl.textContent = (details.colorTemp > 0 ? details.colorTemp : 4000) + 'K';
                         }
                     } else {
                         // Not a color bulb, explicitly hide color picker, temp controls, and mode switch
@@ -620,6 +632,9 @@
                         colorTempContainerEl.style.display = 'none';
                     }
                 }
+                // Update NLS toggle state
+                nlsToggle.checked = details.isNaturalLightActive || false;
+
                 isUpdatingProgrammatically = false;
                 updateStatus(`${details.alias} details loaded.`);
             } catch (err) {
@@ -685,7 +700,7 @@
 
             const lightState = {
                 ip: ip,
-                color_temp: parseInt(document.getElementById('colorTempSlider').value),
+                colorTemp: parseInt(document.getElementById('colorTempSlider').value),
                 brightness: parseInt(document.getElementById('brightnessSlider').value), // Use current brightness
                 hue: 0, // Explicitly set to 0 for temp mode
                 saturation: 0, // Explicitly set to 0 for temp mode
@@ -732,7 +747,7 @@
                 hue: hsv.h,
                 saturation: hsv.s,
                 brightness: hsv.v, // Brightness from the color itself (V in HSV)
-                color_temp: 0 // Ensure color mode
+                colorTemp: 0 // Ensure color mode
             };
 
             // No need to call updateStatus here, as continuous input might be too noisy.
@@ -778,7 +793,7 @@
                 payload.hue = hsvColor.h;
                 payload.saturation = hsvColor.s;
                 payload.brightness = hsvColor.v; // Use color's value for brightness
-                payload.color_temp = 0;
+                payload.colorTemp = 0;
 
                 isUpdatingProgrammatically = true;
                 colorPicker.disabled = false;
@@ -792,7 +807,7 @@
                 payload.hue = 0;
                 payload.saturation = 0;
                 payload.brightness = parseInt(brightnessSlider.value, 10); // Use brightness slider's current value
-                payload.color_temp = parseInt(colorTempSlider.value, 10);
+                payload.colorTemp = parseInt(colorTempSlider.value, 10);
 
                 isUpdatingProgrammatically = true;
                 colorPicker.disabled = true;
@@ -843,10 +858,10 @@
                     payload.hue = hsv.h;
                     payload.saturation = hsv.s;
                     // payload.brightness is already set from slider
-                    payload.color_temp = 0;
+                    payload.colorTemp = 0;
                 }
             } else { // White Mode (temp)
-                payload.color_temp = parseInt(colorTempSlider.value);
+                payload.colorTemp = parseInt(colorTempSlider.value);
                 payload.hue = 0;
                 payload.saturation = 0;
                 // payload.brightness is already set from slider
@@ -875,10 +890,42 @@
             });
         }
 
-        function togglePowerHandler(e) {
-            const isOn = e.target.checked;
+        async function toggleNLSMasterHandler(e) {
+            const enable = e.target.checked;
             if (selectedDevice) {
-                setDevicePower(selectedDevice.ip, isOn);
+                await setNaturalLightSync(selectedDevice.ip, enable);
+                // Optionally, re-fetch details to confirm or rely on UI to update immediately
+                // For now, we'll assume the call succeeded and UI reflects the change.
+                // Consider adding visual feedback or disabling toggle during the request.
+            }
+        }
+
+        async function setNaturalLightSync(ip, enable) {
+            updateStatus(`Setting Natural Light Sync for ${ip} to ${enable}...`);
+            try {
+                const res = await fetch(`/api/device/${ip}/natural-light`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ enable: enable })
+                });
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(`HTTP error! status: ${res.status} - ${errorText}`);
+                }
+                const resultText = await res.text();
+                updateStatus(resultText);
+                // Optionally, after successful NLS change, refresh device details to get updated state (including NLS effect)
+                if (selectedDevice && selectedDevice.ip === ip) {
+                    getDeviceDetails(ip); // Refresh details for the selected device
+                }
+            } catch (err) {
+                console.error('Error setting Natural Light Sync:', err);
+                updateStatus(`Error setting NLS: ${err.message}. Check console.`);
+                // Revert toggle if the API call failed
+                const nlsToggle = document.getElementById('nlsToggle');
+                if (nlsToggle) nlsToggle.checked = !enable;
             }
         }
 
@@ -908,34 +955,42 @@
 
         async function discoverDevices() {
             updateStatus('Discovering devices...', true);
-            discoverBtn.disabled = true;
-            
             try {
-                const response = await fetch('/api/discover');
-                if (!response.ok) {
-                    throw new Error(`Error: ${response.status}`);
-                }
-                
-                const devices = await response.json();
-                updateStatus(`Found ${devices.length} devices`);
-                renderDeviceList(devices);
-                
-                // If devices are found, select the first one
-                if (devices.length > 0) {
-                    selectDevice(devices[0]);
+                const res = await fetch('/api/discover');
+                const devices = await res.json();
+                deviceListEl.innerHTML = ''; // Clear previous list
+                if (devices && devices.length > 0) {
+                    devices.forEach(device => {
+                        const card = document.createElement('div');
+                        card.className = 'device-card';
+                        card.setAttribute('data-ip', device.ip);
+                        card.innerHTML = `
+                            <div class="device-name">${device.alias}</div>
+                            <div class="device-model">${device.model}</div>
+                            <div class="device-ip">${device.ip}</div>
+                        `;
+                        card.addEventListener('click', () => selectDevice(device));
+                        deviceListEl.appendChild(card);
+                    });
+                    updateStatus(`${devices.length} devices found. Click a device to see details.`);
+                    // Automatically select and fetch details for the first device if any
+                    if(devices.length > 0 && !selectedDevice) {
+                        selectDevice(devices[0]);
+                    }
                 } else {
-                    detailPanelEl.classList.remove('visible');
+                    deviceListEl.innerHTML = '<div class="empty-message">No devices found.</div>';
+                    updateStatus('No devices found on your network.');
                 }
             } catch (err) {
-                updateStatus(`Discovery failed: ${err.message}`);
-                console.error('Error during discovery:', err);
+                console.error('Error discovering devices:', err);
+                updateStatus('Error discovering devices. Check console.');
             } finally {
                 discoverBtn.disabled = false;
             }
         }
 
         // Initial setup
-        discoverDevices(); // Automatically discover devices on page load
+        discoverDevices(); // Automatically discover on page load
     </script>
 </body>
 </html>
