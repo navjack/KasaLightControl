@@ -664,10 +664,31 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Ensure mutually exclusive HSB vs ColorTemp settings
-	if hue, hueOk := desiredLightState["hue"]; hueOk && hue.(int) > 0 {
+	// Normalize on_off to int 0/1 for Kasa API
+	if v, ok := desiredLightState["on_off"]; ok {
+		switch val := v.(type) {
+		case bool:
+			if val { desiredLightState["on_off"] = 1 } else { desiredLightState["on_off"] = 0 }
+		case float64:
+			desiredLightState["on_off"] = int(val)
+		}
+	}
+
+	// Ensure mutually exclusive HSB vs ColorTemp settings using safe int conversion
+	toInt := func(x interface{}) int {
+		switch t := x.(type) {
+		case int:
+			return t
+		case float64:
+			return int(t)
+		default:
+			return 0
+		}
+	}
+
+	if hueVal, hueOk := desiredLightState["hue"]; hueOk && toInt(hueVal) > 0 {
 		desiredLightState["color_temp"] = 0
-	} else if ct, ctOk := desiredLightState["color_temp"]; ctOk && ct.(int) > 0 {
+	} else if ctVal, ctOk := desiredLightState["color_temp"]; ctOk && toInt(ctVal) > 0 {
 		desiredLightState["hue"] = 0
 		desiredLightState["saturation"] = 0
 	}
@@ -786,10 +807,31 @@ func handleSetLightStateWithIP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Ensure mutually exclusive HSB vs ColorTemp settings
-	if hue, hueOk := desiredLightState["hue"]; hueOk && hue.(int) > 0 {
+	// Normalize on_off to int 0/1 for Kasa API
+	if v, ok := desiredLightState["on_off"]; ok {
+		switch val := v.(type) {
+		case bool:
+			if val { desiredLightState["on_off"] = 1 } else { desiredLightState["on_off"] = 0 }
+		case float64:
+			desiredLightState["on_off"] = int(val)
+		}
+	}
+
+	// Ensure mutually exclusive HSB vs ColorTemp settings using safe int conversion
+	toInt := func(x interface{}) int {
+		switch t := x.(type) {
+		case int:
+			return t
+		case float64:
+			return int(t)
+		default:
+			return 0
+		}
+	}
+
+	if hueVal, hueOk := desiredLightState["hue"]; hueOk && toInt(hueVal) > 0 {
 		desiredLightState["color_temp"] = 0
-	} else if ct, ctOk := desiredLightState["color_temp"]; ctOk && ct.(int) > 0 {
+	} else if ctVal, ctOk := desiredLightState["color_temp"]; ctOk && toInt(ctVal) > 0 {
 		desiredLightState["hue"] = 0
 		desiredLightState["saturation"] = 0
 	}

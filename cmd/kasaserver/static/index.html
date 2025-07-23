@@ -342,7 +342,7 @@
                             
                             <div id="colorTempContainer" style="margin-top: 10px; display: none;"> 
                                 <label for="colorTempSlider">Temperature:</label>
-                                <input type="range" id="colorTempSlider" min="2500" max="6500" value="4000" step="100">
+                                <input type="range" id="colorTempSlider" min="2500" max="9000" value="4000" step="100">
                                 <span id="colorTempValue">4000K</span>
                             </div>
                             
@@ -573,7 +573,7 @@
 
                 // Update global selectedDeviceIsColor with accurate data
                 selectedDeviceIsColor = details.isColor; // Corrected: isColor
-                selectedDeviceIsVariableCT = details.isVariableCT; // Store this too
+                selectedDeviceIsVariableCT = details.isVariableColorTemperature; // Store this too
 
                 document.getElementById('detailTitle').textContent = details.alias || 'Device Details';
                 document.getElementById('detailAlias').textContent = `Name: ${details.alias}`; 
@@ -704,8 +704,16 @@
         }
 
         async function handleColorTempChange() {
+            console.log('handleColorTempChange called', {
+                isUpdatingProgrammatically,
+                selectedDevice: selectedDevice?.alias,
+                isVariableColorTemperature: selectedDevice?.isVariableColorTemperature,
+                modeTempRadio: modeTempRadio.checked
+            });
+            
             // Guards: Ensure a device is selected, it supports variable CT, and temp mode is active
-            if (isUpdatingProgrammatically || !selectedDevice || !selectedDevice.isVariableCT || !modeTempRadio.checked) {
+            if (isUpdatingProgrammatically || !selectedDevice || !selectedDevice.isVariableColorTemperature || !modeTempRadio.checked) {
+                console.log('handleColorTempChange: Guard condition failed, returning');
                 return;
             }
 
@@ -714,8 +722,7 @@
             const currentBrightness = parseInt(brightnessSlider.value, 10);
 
             const payload = {
-                // ip: ip, // Not needed in payload body, IP is in URL path
-                on_off: powerToggleEl.checked, 
+                on_off: powerToggleEl.checked ? 1 : 0, // Ensure integer 0/1 for Kasa API
                 hue: 0,
                 saturation: 0,
                 brightness: currentBrightness,
@@ -770,14 +777,17 @@
             const currentBrightness = parseInt(brightnessSlider.value);
 
             const payload = {
-                on_off: true, // Ensure light is on when color is set
-                hue: hsv.h,
-                saturation: hsv.s,
+                on_off: 1, // Ensure light is on when color is set (integer for Kasa API)
+                hue: Math.round(hsv.h), // Ensure integer hue (0-360)
+                saturation: Math.round(hsv.s), // Ensure integer saturation (0-100)
                 brightness: currentBrightness,
                 color_temp: 0 // Kasa interprets 0 for color_temp as staying in color mode
             };
 
-            updateStatus(`Setting ${selectedDevice.alias} to ${hexColor} (H:${hsv.h} S:${hsv.s} B:${currentBrightness})...`);
+            // Save the selected color for brightness changes
+            lastSelectedHexColor = hexColor;
+            
+            updateStatus(`Setting ${selectedDevice.alias} to ${hexColor} (H:${Math.round(hsv.h)} S:${Math.round(hsv.s)} B:${currentBrightness})...`);
 
             try {
                 const res = await fetch(`/api/device/${ip}/light-state`, {
@@ -817,52 +827,71 @@
 
         async function handleBrightnessChange(event) {
             if (isUpdatingProgrammatically || !selectedDevice) return;
+            
             brightnessValue.textContent = brightnessSlider.value; // Update text display immediately
             const brightness = parseInt(brightnessSlider.value);
+            const ip = selectedDevice.ip;
+            
             let payload = {
-                ip: selectedDevice.ip,
-                on: powerToggleEl.checked, // Keep current power state
+                on_off: powerToggleEl.checked ? 1 : 0, // Use integer 0/1 for Kasa API
                 brightness: brightness,
             };
 
-            if (modeColorRadio.checked) { // Color Mode
-                const hexColor = colorPaletteContainer.style.backgroundColor;
-                const rgb = hexToRgb(hexColor);
+            if (modeColorRadio.checked && selectedDeviceIsColor) { // Color Mode
+                // Get current color from last selected or default
+                const rgb = hexToRgb(lastSelectedHexColor || "#FFFFFF");
                 if (rgb) {
                     const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-                    payload.hue = hsv.h;
-                    payload.saturation = hsv.s;
-                    // payload.brightness is already set from slider
-                    payload.colorTemp = 0;
+                    payload.hue = Math.round(hsv.h);
+                    payload.saturation = Math.round(hsv.s);
+                    payload.color_temp = 0;
+                } else {
+                    // Fallback to white if no valid color
+                    payload.hue = 0;
+                    payload.saturation = 0;
+                    payload.color_temp = 0;
                 }
-            } else { // White Mode (temp)
-                payload.colorTemp = parseInt(colorTempSlider.value);
+            } else if (modeTempRadio.checked && selectedDeviceIsVariableCT) { // Temperature Mode
+                payload.color_temp = parseInt(colorTempSlider.value);
                 payload.hue = 0;
                 payload.saturation = 0;
-                // payload.brightness is already set from slider
+            } else {
+                // Default case - just brightness
+                payload.hue = 0;
+                payload.saturation = 0;
+                payload.color_temp = 0;
             }
 
             console.log('Setting brightness with payload:', payload);
-            fetch('/api/set-light-state', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload),
-            })
-            .then(response => response.json())
-            .then(data => {
-                console.log('Set brightness response:', data);
-                if (data.error) {
-                    updateStatus(`Error: ${data.error}`);
-                } else {
-                    // Optionally update UI elements if needed, though brightness slider already reflects value
+            updateStatus(`Setting ${selectedDevice.alias} brightness to ${brightness}%...`);
+            
+            try {
+                const response = await fetch(`/api/device/${ip}/light-state`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: 'Unknown error structure' }));
+                    console.error('Error setting brightness:', response.status, errorData);
+                    updateStatus(`Error setting brightness: ${errorData.error || response.statusText || 'Failed'}`);
+                    return;
                 }
-            })
-            .catch(err => {
-                console.error('Error setting brightness:', err);
-                updateStatus('Error setting brightness. Check console.');
-            });
+                
+                const result = await response.json();
+                if (result && result.success) {
+                    updateStatus(`${selectedDevice.alias} brightness set to ${brightness}%.`);
+                } else {
+                    console.error('Failed to set brightness:', result);
+                    updateStatus(`Error setting brightness: ${result.error || 'Failed from server logic'}`);
+                }
+            } catch (error) {
+                console.error('Error setting brightness via API:', error);
+                updateStatus('API error setting brightness. Check console.');
+            }
         }
 
         async function toggleNLSMasterHandler(e) {
