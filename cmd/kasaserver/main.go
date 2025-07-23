@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"context"
 	"encoding/json"
 	"flag"
@@ -34,6 +35,30 @@ var (
 	serverInstance          *http.Server // Global server instance for shutdown
 	portFlag                *int         // Command-line flag for port
 )
+
+func resolveStaticDir() string {
+	// 1. ENV override
+	if d := os.Getenv("STATIC_DIR"); d != "" {
+		return d
+	}
+	// 2. Directory next to executable (for .app Resources/static or normal dist)
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		// a) sibling "static" folder
+		cand := filepath.Join(execDir, "static")
+		if info, err := os.Stat(cand); err == nil && info.IsDir() {
+			return cand
+		}
+		// b) macOS .app Resources/static (../Resources/static)
+		cand2 := filepath.Join(execDir, "..", "Resources", "static")
+		if info, err := os.Stat(cand2); err == nil && info.IsDir() {
+			return cand2
+		}
+	}
+	// 3. fallback to repo path (for dev)
+	return "./cmd/kasaserver/static"
+}
 
 func init() {
 	// Define command-line flag for the port
@@ -318,8 +343,8 @@ func setupRoutes() *mux.Router {
 	api.HandleFunc("/set-power", handleSetPower).Methods("POST")     // Ensure this is also using Gorilla Mux vars if needed
 	api.HandleFunc("/shutdown", handleShutdown).Methods("POST") // New shutdown endpoint
 
-	// Serve static files
-	staticDir := "./cmd/kasaserver/static" // Corrected path
+	// Serve static files with dynamic path detection
+	staticDir := resolveStaticDir()
 	fileServer := http.FileServer(http.Dir(staticDir))
 	r.PathPrefix("/").Handler(http.StripPrefix("/", fileServer))
 
