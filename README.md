@@ -1,21 +1,20 @@
 # Kasa Light Control Application
 
 ## Project Goal
-Develop a GUI-based application that fully replicates the functionality of an existing PowerShell script for controlling TPLink Kasa smart bulbs locally, eliminating the dependency on the Python-Kasa framework.
+This application provides a GUI-based solution for controlling TPLink Kasa smart bulbs locally, fully replicating the functionality of an existing PowerShell script and eliminating the dependency on the Python-Kasa framework.
 
 ## Project Description
-This project aims to understand the protocol and communication methods employed by TPLink Kasa devices (as potentially used by libraries like Python-Kasa) and to independently implement this functionality directly in GoLang. The initial development will focus on GoLang for its cross-platform capabilities, with potential future ports or expansions into Swift for native macOS GUI integration.
+This project successfully implements the network protocols and communication methods used by TPLink Kasa devices directly in GoLang. Developed with cross-platform capabilities in mind, it provides a robust and reliable solution for local control of Kasa smart bulbs.
 
-## Key Features to Implement:
+## Implemented Features:
 
-*   Reverse-engineer and document the network protocols used by Kasa devices.
-*   Full local control capabilities including:
+*   **Network Protocol Implementation**: Successfully reverse-engineered and implemented network protocols for Kasa devices in GoLang.
+*   **Full Local Control**: Comprehensive control capabilities for Kasa smart bulbs, including:
     *   Turning devices on/off.
     *   Adjusting brightness, color temperature, and color settings.
-    *   Retrieving device state and power usage (where applicable).
-*   Device discovery on the local network.
-*   Historical energy usage monitoring (for applicable devices).
-*   A clean, user-friendly GUI.
+    *   Retrieving device state.
+*   **Device Discovery**: Automatic discovery of Kasa smart devices on the local network.
+*   **User-Friendly GUI**: A clean, intuitive, and responsive browser-based graphical user interface.
 
 ## Usage
 
@@ -89,7 +88,7 @@ The Kasa Light Control server exposes the following RESTful API endpoints:
 
 - **`POST /api/device/{ip}/power`**
   - Turns a device on or off.
-  - **Request Body**: `{"state": boolean}` (true for on, false for off)
+  - **Request Body**: `{"state": int}` (1 for on, 0 for off)
   - **Response**: Text message indicating success or failure.
 
 - **`POST /api/device/{ip}/light-state`**
@@ -97,9 +96,9 @@ The Kasa Light Control server exposes the following RESTful API endpoints:
   - **Request Body**: 
     ```json
     {
-      "on_off": boolean, // Optional, true for on, false for off
+      "on_off": int, // Optional, 1 for on, 0 for off
       "brightness": int, // Optional, 0-100
-      "color_temp": int, // Optional, Kelvin (e.g., 2700-6500)
+      "color_temp": int, // Optional, Kelvin (e.g., 2500-9000 for KL130 bulbs)
       "hue": int,        // Optional, 0-360
       "saturation": int  // Optional, 0-100
     }

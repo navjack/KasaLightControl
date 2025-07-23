@@ -36,6 +36,12 @@ var (
 	portFlag                *int         // Command-line flag for port
 )
 
+// resolveStaticDir determines the correct path to the static web files.
+// It checks in the following order:
+// 1. STATIC_DIR environment variable (for explicit override).
+// 2. A 'static' folder next to the executable (for standard deployments).
+// 3. A 'Resources/static' folder (for macOS .app bundles).
+// 4. Falls back to './cmd/kasaserver/static' (for development).
 func resolveStaticDir() string {
 	// 1. ENV override
 	if d := os.Getenv("STATIC_DIR"); d != "" {
@@ -65,34 +71,39 @@ func init() {
 	portFlag = flag.Int("port", 8080, "Port for the server to listen on")
 }
 
+// Device represents the detailed information and current state of a Kasa smart device.
 type Device struct {
-	DeviceID     string `json:"deviceId"`
-	Model        string `json:"model"`
-	Alias        string `json:"alias"`
-	IP           string `json:"ip"`
-	MACAddress   string `json:"macAddress"`
-	IsColor      bool   `json:"isColor"`
-	IsDimmer     bool   `json:"isDimmer"`
-	IsVariableCT bool   `json:"isVariableColorTemperature"`
-	PowerState   bool   `json:"powerState"` // true for on, false for off
-	Brightness   int    `json:"brightness,omitempty"`
-	ColorTemp    int    `json:"colorTemp,omitempty"`
-	Hue          int    `json:"hue,omitempty"`
-	Saturation   int    `json:"saturation,omitempty"`
-	Status       string `json:"status,omitempty"` // Added to retain discovered/online status
-	IsNaturalLightActive bool `json:"isNaturalLightActive,omitempty"` // For UI to know NLS status
+	DeviceID     string `json:"deviceId"`             // Unique identifier for the device.
+	Model        string `json:"model"`                // Device model (e.g., "KL130(US)").
+	Alias        string `json:"alias"`                // User-defined name for the device.
+	IP           string `json:"ip"`                   // IP address of the device.
+	MACAddress   string `json:"macAddress"`           // MAC address of the device.
+	IsColor      bool   `json:"isColor"`              // True if the device supports color.
+	IsDimmer     bool   `json:"isDimmer"`             // True if the device supports dimming.
+	IsVariableCT bool   `json:"isVariableColorTemperature"` // True if the device supports variable color temperature.
+	PowerState   bool   `json:"powerState"`           // Current power state: true for on, false for off.
+	Brightness   int    `json:"brightness,omitempty"` // Current brightness (0-100), if supported.
+	ColorTemp    int    `json:"colorTemp,omitempty"`  // Current color temperature in Kelvin, if supported.
+	Hue          int    `json:"hue,omitempty"`        // Current hue (0-360), if supported.
+	Saturation   int    `json:"saturation,omitempty"` // Current saturation (0-100), if supported.
+	Status       string `json:"status,omitempty"`     // Device status (e.g., "Discovered", "Online").
+	IsNaturalLightActive bool `json:"isNaturalLightActive,omitempty"` // Indicates if Natural Light Sync is active for this device.
 }
 
+// NaturalLightPoint defines a single point in the 24-hour natural light cycle.
+// It specifies the desired color temperature and brightness at a particular time.
 type NaturalLightPoint struct {
-	Hour       int // Hour of the day (0-23)
-	Minute     int // Minute of the hour (0-59)
-	ColorTemp  int // Kelvin
-	Brightness int // Percent (0-100)
+	Hour       int // Hour of the day (0-23) for this point.
+	Minute     int // Minute of the hour (0-59) for this point.
+	ColorTemp  int // Desired color temperature in Kelvin at this point.
+	Brightness int // Desired brightness in percent (0-100) at this point.
 }
 
 var (
 	discoveredDevices      []kasa.DiscoveredDevice
 	discoveredDevicesMutex = &sync.Mutex{}
+	// naturalLightCurve defines the desired color temperature and brightness throughout a 24-hour cycle.
+	// The values are interpolated based on the current time to provide a smooth transition.
 	naturalLightCurve      = []NaturalLightPoint{
 		{Hour: 0, Minute: 0, ColorTemp: 2200, Brightness: 5},   // Midnight
 		{Hour: 6, Minute: 0, ColorTemp: 2700, Brightness: 10},  // Sunrise start
@@ -105,21 +116,27 @@ var (
 		{Hour: 21, Minute: 0, ColorTemp: 2500, Brightness: 15}, // Evening
 		{Hour: 22, Minute: 30, ColorTemp: 2200, Brightness: 5},  // Late Evening
 	}
-	naturalLightUpdateInterval = 5 * time.Minute // How often to update
-	naturalLightTransitionPeriod = 5000        // 5 seconds in milliseconds
-	naturalLightTicker      *time.Ticker
-	naturalLightStopChan    chan struct{}
+	naturalLightUpdateInterval = 5 * time.Minute // How often to update the natural light state for active devices.
+	naturalLightTransitionPeriod = 5000        // Transition period in milliseconds for light state changes.
+	naturalLightTicker      *time.Ticker        // Ticker for periodic natural light updates.
+	naturalLightStopChan    chan struct{}       // Channel to signal the natural light manager to stop.
 )
 
+// calculateNaturalLightState interpolates the desired color temperature and brightness
+// for a given time of day based on the predefined naturalLightCurve.
+// It handles time wrapping (e.g., points spanning midnight) to ensure continuous interpolation.
 func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
-	// Ensure naturalLightCurve is sorted by time (should be done at startup once)
-	// For safety, could re-sort or check here, but assume sorted for performance.
+	// The naturalLightCurve is assumed to be sorted by time (Hour, Minute) at startup.
+	// This function finds two bracketing points in the curve for the given time `t`
+	// and interpolates the color temperature and brightness between them.
 
 	nowMinutes := t.Hour()*60 + t.Minute()
 	var p1, p2 NaturalLightPoint
 	var p1TimeInMinutes, p2TimeInMinutes int
 
-	// Find points p1 (before/at now) and p2 (after now)
+	// Find the two natural light points (p1 and p2) that bracket the current time.
+	// p1 is the point at or before the current time, and p2 is the point after it.
+	// The logic handles the wrap-around from the last point of the day to the first point of the next day.
 	found := false
 	for i := 0; i < len(naturalLightCurve); i++ {
 		p1 = naturalLightCurve[i]
@@ -146,13 +163,15 @@ func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
 	}
 
 	if !found {
-		// Should not happen if curve is well-defined and covers 24h, or if logic is perfect.
-		// Default to the first point in the curve if something goes wrong.
+		// This case should ideally not be reached if the naturalLightCurve covers a full 24-hour cycle.
+		// If it does, it indicates a potential issue with the curve definition or the bracketing logic.
+		// As a fallback, it defaults to the first point in the curve.
 		log.Printf("Warning: Could not accurately find bracketing points for time %v. Defaulting to first curve point.", t)
 		return naturalLightCurve[0].ColorTemp, naturalLightCurve[0].Brightness
 	}
 
-	// Interpolate
+	// Perform linear interpolation between p1 and p2 to calculate the current color temperature and brightness.
+	// The `tFactor` represents the proportional distance of the current time between p1 and p2.
 	effectiveP2TimeInMinutes := p2TimeInMinutes
 	if effectiveP2TimeInMinutes < p1TimeInMinutes { // p2 is on the next day
 		effectiveP2TimeInMinutes += 24 * 60
@@ -172,8 +191,11 @@ func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
 	}
 
 	// The crucial part for interpolation factor:
-	// If we wrapped (p1 is late, p2 is early next day), and 'now' is also late (after p1), then 'now' is correct.
-	// If we wrapped, and 'now' is early next day (numerically smaller than p1), then effectiveNowMinutes needs to be now + 24*60
+	// Adjust `effectiveNowMinutes` for accurate interpolation when crossing midnight.
+	// If p1 is in the current day and p2 is in the next day (due to wrap-around),
+	// and the current time `nowMinutes` is numerically smaller than p1 (i.e., it's in the next day),
+	// then `nowMinutes` needs to be adjusted by adding 24 hours (1440 minutes) to place it correctly
+	// within the interpolation interval relative to p1.
 	if p1TimeInMinutes > p2TimeInMinutes && nowMinutes < p1TimeInMinutes { // This implies 'now' is on the next day relative to p1
 		effectiveNowMinutes += 24 * 60
 	}
@@ -189,6 +211,8 @@ func calculateNaturalLightState(t time.Time) (colorTemp int, brightness int) {
 	return ct, br
 }
 
+// startNaturalLightSyncManager initializes and starts a goroutine that periodically updates
+// the state of devices for which Natural Light Sync is enabled.
 func startNaturalLightSyncManager() {
 	// Ensure naturalLightCurve is sorted by time at startup
 	sort.Slice(naturalLightCurve, func(i, j int) bool {
@@ -215,6 +239,8 @@ func startNaturalLightSyncManager() {
 	}()
 }
 
+// stopNaturalLightSyncManager gracefully stops the natural light sync manager goroutine.
+// It sends a signal to the stop channel and ensures the ticker is stopped.
 func stopNaturalLightSyncManager() {
 	if naturalLightStopChan != nil {
 		// Check if channel is already closed to prevent panic
@@ -229,6 +255,9 @@ func stopNaturalLightSyncManager() {
 	}
 }
 
+// updateAllNaturalLightDevices is called periodically by the natural light sync manager.
+// It calculates the current natural light state (color temperature and brightness)
+// and applies it to all devices that have Natural Light Sync enabled.
 func updateAllNaturalLightDevices() {
 	naturalLightSyncMutex.Lock()
 	activeDevices := make([]string, 0, len(naturalLightSyncDevices))
@@ -275,6 +304,9 @@ func updateAllNaturalLightDevices() {
 	}
 }
 
+// handleSetNaturalLightMode enables or disables Natural Light Sync for a specific device.
+// It expects a JSON request body with an 'enable' boolean field.
+// If enabling, it also triggers an immediate update to set the device's initial state.
 func handleSetNaturalLightMode(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ip := vars["ip"]
@@ -330,27 +362,31 @@ func handleSetNaturalLightMode(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Natural Light Sync for %s set to %v", ip, reqBody.Enable)
 }
 
+// setupRoutes configures the HTTP routes for the server.
+// It sets up API endpoints and serves static files from the determined static directory.
 func setupRoutes() *mux.Router {
 	r := mux.NewRouter()
 
 	api := r.PathPrefix("/api").Subrouter()
-	api.HandleFunc("/discover", handleDiscover).Methods("GET")
-	api.HandleFunc("/devices", handleGetDevices).Methods("GET")
-	api.HandleFunc("/device/{ip}/details", getDeviceDetailsHandler).Methods("GET")
-	api.HandleFunc("/set-light-state", handleSetLightState).Methods("POST")
-	api.HandleFunc("/device/{ip}/light-state", handleSetLightStateWithIP).Methods("POST")
-	api.HandleFunc("/device/{ip}/natural-light", handleSetNaturalLightMode).Methods("POST")
-	api.HandleFunc("/set-power", handleSetPower).Methods("POST")     // Ensure this is also using Gorilla Mux vars if needed
-	api.HandleFunc("/shutdown", handleShutdown).Methods("POST") // New shutdown endpoint
+	api.HandleFunc("/discover", handleDiscover).Methods("GET") // Discovers Kasa devices on the network.
+	api.HandleFunc("/devices", handleGetDevices).Methods("GET") // Retrieves a list of discovered devices.
+	api.HandleFunc("/device/{ip}/details", getDeviceDetailsHandler).Methods("GET") // Fetches detailed information for a specific device.
+	api.HandleFunc("/set-light-state", handleSetLightState).Methods("POST") // Sets the light state (brightness, color, temp) for a device (legacy, uses query params).
+	api.HandleFunc("/device/{ip}/light-state", handleSetLightStateWithIP).Methods("POST") // Sets the light state (brightness, color, temp) for a device by IP (preferred).
+	api.HandleFunc("/device/{ip}/natural-light", handleSetNaturalLightMode).Methods("POST") // Enables/disables Natural Light Sync for a device.
+	api.HandleFunc("/set-power", handleSetPower).Methods("POST")     // Sets the power state for a device (legacy, uses query params).
+	api.HandleFunc("/shutdown", handleShutdown).Methods("POST") // Shuts down the server gracefully.
 
-	// Serve static files with dynamic path detection
+	// Serve static files from the resolved static directory.
 	staticDir := resolveStaticDir()
 	fileServer := http.FileServer(http.Dir(staticDir))
-	r.PathPrefix("/").Handler(http.StripPrefix("/", fileServer))
+	r.PathPrefix("/").Handler(http.StripPrefix("/", fileServer)) // Serves the web UI and other static assets.
 
 	return r
 }
 
+// startServer initializes and starts the HTTP server on the specified port.
+// It also attempts to open the web UI in the default browser.
 func startServer(port int) {
 	r := setupRoutes()
 
@@ -370,6 +406,9 @@ func startServer(port int) {
 	openBrowser(fmt.Sprintf("http://localhost:%d", port))
 }
 
+// main is the entry point of the Kasa Light Control server application.
+// It parses command-line flags, initializes caches, starts the natural light sync manager,
+// starts the HTTP server, and handles graceful shutdown upon receiving an interrupt signal.
 func main() {
 	flag.Parse() // Parse command-line flags
 

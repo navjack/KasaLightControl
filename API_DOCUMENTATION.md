@@ -37,7 +37,7 @@ All API endpoints are relative to the following base URL:
 
 ### 2. Get Device Details
 - **Method**: `GET`
-- **Path**: `/api/device-details`
+- **Path**: `/api/device/{ip}/details`
 - **Description**: Retrieves detailed information and current state for a specific Kasa device.
 - **Query Parameters**:
   - `ip` (string, required): The IP address of the Kasa device.
@@ -73,7 +73,7 @@ All API endpoints are relative to the following base URL:
 
 ### 3. Set Device Power
 - **Method**: `POST`
-- **Path**: `/api/set-power`
+- **Path**: `/api/device/{ip}/power`
 - **Description**: Turns a Kasa device on or off.
 - **Request Body**:
   - **Type**: `application/json`
@@ -81,7 +81,7 @@ All API endpoints are relative to the following base URL:
     ```json
     {
       "ip": "string_device_ip", // Required
-      "on": boolean             // Required, true for on, false for off
+      "on": int             // Required, 1 for on, 0 for off
     }
     ```
   - **Example**:
@@ -110,7 +110,7 @@ All API endpoints are relative to the following base URL:
 
 ### 4. Set Light State
 - **Method**: `POST`
-- **Path**: `/api/set-light-state`
+- **Path**: `/api/device/{ip}/light-state`
 - **Description**: Sets the light state of a Kasa smart bulb (brightness, hue, saturation, color temperature, power).
 - **Request Body**:
   - **Type**: `application/json`
@@ -118,11 +118,11 @@ All API endpoints are relative to the following base URL:
     ```json
     {
       "ip": "string_device_ip",        // Required
-      "on_off": boolean,               // Optional, true for on, false for off
+      "on_off": int,               // Optional, 1 for on, 0 for off
       "brightness": int,             // Optional, 0-100
       "hue": int,                    // Optional, 0-360
       "saturation": int,             // Optional, 0-100
-      "color_temp": int              // Optional, 2500-6500 (Kelvin). Setting color_temp will typically override hue/saturation.
+      "color_temp": int              // Optional, 2500-9000 (Kelvin). Setting color_temp will typically override hue/saturation.
     }
     ```
     *Note: Send only the parameters you wish to change. If `color_temp` is set to a non-zero value, the bulb usually switches to white mode, and `hue`/`saturation` might be ignored or reset.*
