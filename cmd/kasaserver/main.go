@@ -313,12 +313,13 @@ func setupRoutes() *mux.Router {
 	api.HandleFunc("/devices", handleGetDevices).Methods("GET")
 	api.HandleFunc("/device/{ip}/details", getDeviceDetailsHandler).Methods("GET")
 	api.HandleFunc("/set-light-state", handleSetLightState).Methods("POST")
+	api.HandleFunc("/device/{ip}/light-state", handleSetLightStateWithIP).Methods("POST")
 	api.HandleFunc("/device/{ip}/natural-light", handleSetNaturalLightMode).Methods("POST")
 	api.HandleFunc("/set-power", handleSetPower).Methods("POST")     // Ensure this is also using Gorilla Mux vars if needed
 	api.HandleFunc("/shutdown", handleShutdown).Methods("POST") // New shutdown endpoint
 
 	// Serve static files
-	staticDir := "./static" // Corrected path
+	staticDir := "./cmd/kasaserver/static" // Corrected path
 	fileServer := http.FileServer(http.Dir(staticDir))
 	r.PathPrefix("/").Handler(http.StripPrefix("/", fileServer))
 
@@ -543,17 +544,19 @@ func handleGetDevices(w http.ResponseWriter, r *http.Request) {
 
 func handleSetPower(w http.ResponseWriter, r *http.Request) {
 	var reqBody struct {
-		IP    string `json:"ip"`
-		State bool   `json:"state"` // true for on, false for off
+		IP   string `json:"ip"`
+		IsOn bool   `json:"isOn"` // Changed field name and added tag to match JS
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("API: handleSetPower invoked for IP: %s, IsOn: %t", reqBody.IP, reqBody.IsOn)
+
 	var err error
-	if reqBody.State {
+	if reqBody.IsOn {
 		_, err = kasa.TurnOn(reqBody.IP)
 	} else {
 		_, err = kasa.TurnOff(reqBody.IP)
@@ -567,7 +570,7 @@ func handleSetPower(w http.ResponseWriter, r *http.Request) {
 	// Update cache
 	deviceDetailsMutex.Lock()
 	if dev, ok := deviceDetailsCache[reqBody.IP]; ok {
-		dev.PowerState = reqBody.State
+		dev.PowerState = reqBody.IsOn
 		deviceDetailsCache[reqBody.IP] = dev
 	}
 	deviceDetailsMutex.Unlock()
@@ -656,19 +659,34 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	deviceDetailsMutex.Lock()
 	if dev, ok := deviceDetailsCache[ip]; ok {
 		if onOff, ok := desiredLightState["on_off"]; ok {
-			dev.PowerState = onOff.(int) == 1
+			switch v := onOff.(type) {
+			case int:
+				dev.PowerState = v == 1
+			case bool:
+				dev.PowerState = v
+			case float64:
+				dev.PowerState = int(v) == 1
+			}
 		}
 		if brightness, ok := desiredLightState["brightness"]; ok {
-			dev.Brightness = brightness.(int)
+			if brightnessInt, ok := brightness.(int); ok {
+				dev.Brightness = brightnessInt
+			}
 		}
 		if colorTemp, ok := desiredLightState["color_temp"]; ok {
-			dev.ColorTemp = colorTemp.(int)
+			if colorTempInt, ok := colorTemp.(int); ok {
+				dev.ColorTemp = colorTempInt
+			}
 		}
 		if hue, ok := desiredLightState["hue"]; ok {
-			dev.Hue = hue.(int)
+			if hueInt, ok := hue.(int); ok {
+				dev.Hue = hueInt
+			}
 		}
 		if saturation, ok := desiredLightState["saturation"]; ok {
-			dev.Saturation = saturation.(int)
+			if saturationInt, ok := saturation.(int); ok {
+				dev.Saturation = saturationInt
+			}
 		}
 		deviceDetailsCache[ip] = dev
 	}
@@ -676,6 +694,133 @@ func handleSetLightState(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Light state set for %s", ip)
+}
+
+// handleSetLightStateWithIP handles setting light state with IP from URL path
+func handleSetLightStateWithIP(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	ip := vars["ip"]
+	if ip == "" {
+		http.Error(w, "IP address is required in URL path", http.StatusBadRequest)
+		return
+	}
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Add the IP to the payload for the existing handleSetLightState logic
+	payload["ip"] = ip
+
+	// Construct the desiredLightState map for kasa.SetLightState
+	desiredLightState := make(map[string]interface{})
+	copyableFields := []string{"on_off", "hue", "saturation", "brightness", "color_temp", "transition_period"}
+
+	// Explicitly set on_off to 1 if any light-changing parameter is present and on_off is not set to 0
+	setOn := false
+	for key, value := range payload {
+		if key != "ip" && key != "on_off" && value != nil {
+			switch v := value.(type) {
+			case float64:
+				if v != 0 { setOn = true }
+			case int:
+				if v != 0 { setOn = true }
+			}
+			if setOn { break }
+		}
+	}
+
+	// If on_off is explicitly set to 0, respect that. Otherwise, if other params imply 'on', set on_off=1.
+	if onOffPayload, onOffExists := payload["on_off"]; onOffExists {
+		if onOffFloat, isFloat := onOffPayload.(float64); isFloat && onOffFloat == 0 {
+			desiredLightState["on_off"] = 0
+			setOn = false // Explicitly off
+		} else if onOffInt, isInt := onOffPayload.(int); isInt && onOffInt == 0 {
+			desiredLightState["on_off"] = 0
+			setOn = false // Explicitly off
+		}
+	}
+
+	if setOn {
+		if _, exists := desiredLightState["on_off"]; !exists {
+			desiredLightState["on_off"] = 1 // Default to on if other parameters are being set and not explicitly turning off
+		}
+	}
+
+	for _, field := range copyableFields {
+		if val, ok := payload[field]; ok && val != nil {
+			// Kasa API expects integers for these values.
+			// JSON unmarshals numbers into float64 by default.
+			if fVal, isFloat := val.(float64); isFloat {
+				desiredLightState[field] = int(fVal)
+			} else {
+				desiredLightState[field] = val // Assume it's already an int or other compatible type
+			}
+		}
+	}
+
+	// Ensure mutually exclusive HSB vs ColorTemp settings
+	if hue, hueOk := desiredLightState["hue"]; hueOk && hue.(int) > 0 {
+		desiredLightState["color_temp"] = 0
+	} else if ct, ctOk := desiredLightState["color_temp"]; ctOk && ct.(int) > 0 {
+		desiredLightState["hue"] = 0
+		desiredLightState["saturation"] = 0
+	}
+
+	log.Printf("Setting light state for %s: %+v", ip, desiredLightState)
+
+	_, err := kasa.SetLightState(ip, desiredLightState)
+	if err != nil {
+		http.Error(w, "Failed to set light state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Update cache with new state (best effort, actual state might differ slightly or due to transition)
+	deviceDetailsMutex.Lock()
+	if dev, ok := deviceDetailsCache[ip]; ok {
+		if onOff, ok := desiredLightState["on_off"]; ok {
+			switch v := onOff.(type) {
+			case int:
+				dev.PowerState = v == 1
+			case bool:
+				dev.PowerState = v
+			case float64:
+				dev.PowerState = int(v) == 1
+			}
+		}
+		if brightness, ok := desiredLightState["brightness"]; ok {
+			if brightnessInt, ok := brightness.(int); ok {
+				dev.Brightness = brightnessInt
+			}
+		}
+		if colorTemp, ok := desiredLightState["color_temp"]; ok {
+			if colorTempInt, ok := colorTemp.(int); ok {
+				dev.ColorTemp = colorTempInt
+			}
+		}
+		if hue, ok := desiredLightState["hue"]; ok {
+			if hueInt, ok := hue.(int); ok {
+				dev.Hue = hueInt
+			}
+		}
+		if saturation, ok := desiredLightState["saturation"]; ok {
+			if saturationInt, ok := saturation.(int); ok {
+				dev.Saturation = saturationInt
+			}
+		}
+		deviceDetailsCache[ip] = dev
+	}
+	deviceDetailsMutex.Unlock()
+
+	// Return JSON response for consistency with frontend expectations
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Light state set for %s", ip),
+	})
 }
 
 func handleShutdown(w http.ResponseWriter, r *http.Request) {

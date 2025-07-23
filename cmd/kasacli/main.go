@@ -3,10 +3,56 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/user/kasalightcontrol/kasa"
 )
+
+func rgbToHsv(r, g, b int) (int, int, int) {
+	// Normalize RGB to [0,1]
+	rf := float64(r) / 255.0
+	gf := float64(g) / 255.0
+	bf := float64(b) / 255.0
+
+	cmax := rf
+	if gf > cmax {
+		cmax = gf
+	}
+	if bf > cmax {
+		cmax = bf
+	}
+	cmin := rf
+	if gf < cmin {
+		cmin = gf
+	}
+	if bf < cmin {
+		cmin = bf
+	}
+	delta := cmax - cmin
+
+	var h float64
+	if delta == 0 {
+		h = 0
+	} else if cmax == rf {
+		h = 60 * math.Mod(((gf - bf) / delta), 6)
+	} else if cmax == gf {
+		h = 60 * (((bf - rf) / delta) + 2)
+	} else {
+		h = 60 * (((rf - gf) / delta) + 4)
+	}
+	if h < 0 {
+		h += 360
+	}
+	var s float64
+	if cmax == 0 {
+		s = 0
+	} else {
+		s = delta / cmax
+	}
+	v := cmax
+	return int(math.Round(h)), int(math.Round(s * 100)), int(math.Round(v * 100))
+}
 
 func main() {
 	bulbIP := flag.String("ip", "", "IP address of the Kasa bulb (required for most commands)")
@@ -16,6 +62,11 @@ func main() {
 	hue := flag.Int("hue", -1, "Hue (0-360) for set_hsv")
 	sat := flag.Int("sat", -1, "Saturation (0-100) for set_hsv")
 	val := flag.Int("val", -1, "Value/Brightness (0-100) for set_hsv or brightness for set_brightness")
+
+	// Flags for RGB input (new)
+	r := flag.Int("r", -1, "Red (0-255) for RGB input (overrides HSV if set)")
+	g := flag.Int("g", -1, "Green (0-255) for RGB input (overrides HSV if set)")
+	b := flag.Int("b", -1, "Blue (0-255) for RGB input (overrides HSV if set)")
 
 	// Flag for set_brightness (uses -val flag)
 
@@ -67,34 +118,65 @@ func main() {
 		// No need to call SendCommand for get_sysinfo as GetSysInfo handles it.
 		return // Exit after handling get_sysinfo
 	case "set_hsv":
-		if *hue == -1 || *sat == -1 || *val == -1 {
-			fmt.Println("Error: For set_hsv, -hue, -sat, and -val flags are required.")
-			flag.Usage()
-			os.Exit(1)
-		}
-		if *hue < 0 || *hue > 360 {
-			fmt.Println("Error: Hue must be between 0 and 360.")
-			os.Exit(1)
-		}
-		if *sat < 0 || *sat > 100 {
-			fmt.Println("Error: Saturation must be between 0 and 100.")
-			os.Exit(1)
-		}
-		if *val < 0 || *val > 100 {
-			fmt.Println("Error: Value/Brightness must be between 0 and 100.")
-			os.Exit(1)
-		}
-		actionDescription = fmt.Sprintf("Attempting to set HSV (H:%d, S:%d, V:%d, T:%dms) on bulb at %s...", *hue, *sat, *val, *transition, *bulbIP)
-		desiredLightState = map[string]interface{}{
-			"on_off":         1, // Ensure bulb is on when setting color
-			"ignore_default": 1,
-			"hue":            *hue,
-			"saturation":     *sat,
-			"brightness":     *val,
-			"color_temp":     0,
-		}
-		if *transition > 0 {
-			desiredLightState["transition_period"] = *transition
+		// If any RGB flag is set, use RGB input and convert to HSV
+		if *r != -1 || *g != -1 || *b != -1 {
+			if *r < 0 || *r > 255 || *g < 0 || *g > 255 || *b < 0 || *b > 255 {
+				fmt.Println("Error: -r, -g, and -b must be in range 0-255.")
+				os.Exit(1)
+			}
+			// Use provided brightness if set, else default to 100
+			brightness := 100
+			if *val != -1 {
+				if *val < 0 || *val > 100 {
+					fmt.Println("Error: Value/Brightness must be between 0 and 100.")
+					os.Exit(1)
+				}
+				brightness = *val
+			}
+			h, s, v := rgbToHsv(*r, *g, *b)
+			v = brightness // Override value with user-specified brightness if set
+			actionDescription = fmt.Sprintf("Attempting to set RGB (R:%d, G:%d, B:%d) [HSV: %d,%d,%d] on bulb at %s...", *r, *g, *b, h, s, v, *bulbIP)
+			desiredLightState = map[string]interface{}{
+				"on_off":         1,
+				"ignore_default": 1,
+				"hue":            h,
+				"saturation":     s,
+				"brightness":     v,
+				"color_temp":     0,
+			}
+			if *transition > 0 {
+				desiredLightState["transition_period"] = *transition
+			}
+		} else {
+			if *hue == -1 || *sat == -1 || *val == -1 {
+				fmt.Println("Error: For set_hsv, -hue, -sat, and -val flags are required unless using -r, -g, -b.")
+				flag.Usage()
+				os.Exit(1)
+			}
+			if *hue < 0 || *hue > 360 {
+				fmt.Println("Error: Hue must be between 0 and 360.")
+				os.Exit(1)
+			}
+			if *sat < 0 || *sat > 100 {
+				fmt.Println("Error: Saturation must be between 0 and 100.")
+				os.Exit(1)
+			}
+			if *val < 0 || *val > 100 {
+				fmt.Println("Error: Value/Brightness must be between 0 and 100.")
+				os.Exit(1)
+			}
+			actionDescription = fmt.Sprintf("Attempting to set HSV (H:%d, S:%d, V:%d, T:%dms) on bulb at %s...", *hue, *sat, *val, *transition, *bulbIP)
+			desiredLightState = map[string]interface{}{
+				"on_off":         1, // Ensure bulb is on when setting color
+				"ignore_default": 1,
+				"hue":            *hue,
+				"saturation":     *sat,
+				"brightness":     *val,
+				"color_temp":     0,
+			}
+			if *transition > 0 {
+				desiredLightState["transition_period"] = *transition
+			}
 		}
 	case "turn_on":
 		actionDescription = fmt.Sprintf("Attempting to turn ON bulb at %s (T:%dms)...", *bulbIP, *transition)

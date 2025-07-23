@@ -274,6 +274,13 @@
             margin-bottom: 10px;
             display: none;
         }
+
+        .color-swatch {
+            width: 25px;
+            height: 25px;
+            border: 1px solid #ccc;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -329,7 +336,9 @@
                             </div>
                             
                             <label for="colorPicker" style="display: block;">Color:</label>
-                            <input type="color" id="colorPicker" value="#ffffff" style="display: inline-block;">
+                            <div id="colorPaletteContainer" style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px;">
+                                {{-- Color swatches will be rendered here by JavaScript --}}
+                            </div>
                             
                             <div id="colorTempContainer" style="margin-top: 10px; display: none;"> 
                                 <label for="colorTempSlider">Temperature:</label>
@@ -355,7 +364,7 @@
         const discoverBtn = document.getElementById('discoverBtn');
         const shutdownServerButton = document.getElementById('shutdownServerButton');
         const powerToggleEl = document.getElementById('powerToggle');
-        const colorPicker = document.getElementById('colorPicker');
+        const colorPaletteContainer = document.getElementById('colorPaletteContainer');
         const brightnessSlider = document.getElementById('brightnessSlider');
         const brightnessValue = document.getElementById('brightnessValue');
         const colorControls = document.getElementById('colorControls');
@@ -369,7 +378,23 @@
         // Global state
         let selectedDevice = null;
         let selectedDeviceIsColor = false; // Will be updated by getDeviceDetails
+        let selectedDeviceIsVariableCT = false; // Will be updated by getDeviceDetails
         let isUpdatingProgrammatically = false; // Flag to prevent event loops
+        let lastSelectedHexColor = "#FFFFFF"; // Store the last picked color for mode switching
+        
+        // Color Palette Array
+        const colorPalette = [
+            { name: "Red", hex: "#FF0000" },
+            { name: "Orange", hex: "#FFA500" },
+            { name: "Yellow", hex: "#FFFF00" },
+            { name: "Green", hex: "#00FF00" },
+            { name: "Cyan", hex: "#00FFFF" },
+            { name: "Blue", hex: "#0000FF" },
+            { name: "Purple", hex: "#800080" },
+            { name: "Pink", hex: "#FFC0CB" },
+            { name: "White", hex: "#FFFFFF" },
+            { name: "Warm White", hex: "#FFDAB9" } // PeachPuff, a warm white like
+        ];
         
         // Event Listeners
         discoverBtn.addEventListener('click', () => {
@@ -406,7 +431,7 @@
         modeColorRadio.addEventListener('change', handleModeSwitch);
         modeTempRadio.addEventListener('change', handleModeSwitch);
         
-        colorPicker.addEventListener('input', handleColorChange);
+        renderColorPalette(); // Render the palette on load
         
         nlsToggleEl.addEventListener('change', toggleNLSMasterHandler); // Event listener for NLS toggle
         
@@ -548,6 +573,7 @@
 
                 // Update global selectedDeviceIsColor with accurate data
                 selectedDeviceIsColor = details.isColor; // Corrected: isColor
+                selectedDeviceIsVariableCT = details.isVariableCT; // Store this too
 
                 document.getElementById('detailTitle').textContent = details.alias || 'Device Details';
                 document.getElementById('detailAlias').textContent = `Name: ${details.alias}`; 
@@ -559,8 +585,7 @@
                 document.getElementById('detailPanel').classList.add('visible');
 
                 const colorControlsEl = document.getElementById('colorControls');
-                const colorPickerEl = document.getElementById('colorPicker');
-                const colorPickerLabelEl = document.querySelector('label[for="colorPicker"]');
+                const colorPaletteContainerEl = document.getElementById('colorPaletteContainer');
                 const brightnessSliderEl = document.getElementById('brightnessSlider');
                 const brightnessLabelEl = document.querySelector('label[for="brightnessSlider"]');
                 const brightnessValueEl = document.getElementById('brightnessValue');
@@ -573,8 +598,7 @@
                 // Default to hiding all optional controls initially within the detail panel update
                 colorControlsEl.style.display = 'none'; // Hide main container first
                 modeSwitchContainerEl.style.display = 'none';
-                colorPickerEl.style.display = 'none';
-                if (colorPickerLabelEl) colorPickerLabelEl.style.display = 'none';
+                colorPaletteContainerEl.style.display = 'none';
                 brightnessSliderEl.style.display = 'none';
                 if (brightnessLabelEl) brightnessLabelEl.style.display = 'none';
                 if (brightnessValueEl) brightnessValueEl.style.display = 'none';
@@ -598,38 +622,30 @@
 
                         if (details.colorTemp && details.colorTemp > 0) { // Device is in color temperature mode // Corrected: colorTemp
                             modeTempRadio.checked = true;
-                            colorPickerEl.style.display = 'inline-block'; // Keep it visible but disabled
-                            if (colorPickerLabelEl) colorPickerLabelEl.style.display = 'block';
-                            colorPickerEl.disabled = true;
+                            colorPaletteContainerEl.style.display = 'none'; // Keep it hidden but disabled
                             colorTempContainerEl.style.display = 'block';
                             colorTempSliderEl.disabled = false;
                             colorTempSliderEl.value = details.colorTemp; // Corrected: colorTemp
                             colorTempValueEl.textContent = details.colorTemp + 'K'; // Corrected: colorTemp
-                            const whiteHex = rgbToHex(hsvToRgb(0, 0, 100).r, hsvToRgb(0, 0, 100).g, hsvToRgb(0, 0, 100).b);
-                            colorPickerEl.value = whiteHex;
                         } else { // Device is in color (HSB) mode
                             modeColorRadio.checked = true;
-                            colorPickerEl.style.display = 'inline-block'; 
-                            if (colorPickerLabelEl) colorPickerLabelEl.style.display = 'block';
-                            colorPickerEl.disabled = false;
-                            colorTempContainerEl.style.display = 'block'; // Show temp but disable slider
-                            colorTempSliderEl.disabled = true; 
-                            const hsbBrightness = details.brightness !== undefined ? details.brightness : (details.saturation === 0 ? 100 : (details.value || 100)); 
-                            const initialColor = hsvToRgb(details.hue || 0, details.saturation || 0, hsbBrightness);
-                            colorPickerEl.value = rgbToHex(initialColor.r, initialColor.g, initialColor.b);
-                            if (details.isDimmer) {
-                                brightnessSliderEl.value = hsbBrightness;
-                                brightnessValueEl.textContent = hsbBrightness;
+                            colorPaletteContainerEl.style.display = 'flex'; // Show palette
+                            colorTempContainerEl.style.display = 'none';
+                            renderColorPalette(); // Render the color swatches
+
+                            // If device is in color mode, update lastSelectedHexColor using details.hue and details.saturation to preserve current color across brightness changes.
+                            if (details.isColor && (!details.colorTemp || details.colorTemp === 0)) {
+                                // Use current H, S from device and a full V (100) for the representative hex color
+                                const currentRgb = hsvToRgb(details.hue, details.saturation, 100); 
+                                lastSelectedHexColor = rgbToHex(currentRgb.r, currentRgb.g, currentRgb.b);
                             }
-                            colorTempSliderEl.value = details.colorTemp > 0 ? details.colorTemp : 4000; 
-                            colorTempValueEl.textContent = (details.colorTemp > 0 ? details.colorTemp : 4000) + 'K';
                         }
-                    } else {
-                        // Not a color bulb, explicitly hide color picker, temp controls, and mode switch
-                        modeSwitchContainerEl.style.display = 'none';
-                        colorPickerEl.style.display = 'none';
-                        if (colorPickerLabelEl) colorPickerLabelEl.style.display = 'none';
-                        colorTempContainerEl.style.display = 'none';
+                    }
+
+                    // Update color temperature slider if applicable
+                    if (details.isVariableCT) {
+                        colorTempSliderEl.value = details.colorTemp !== undefined ? details.colorTemp : 4000;
+                        colorTempValueEl.textContent = colorTempSliderEl.value + 'K';
                     }
                 }
                 // Update NLS toggle state
@@ -688,160 +704,119 @@
         }
 
         async function handleColorTempChange() {
-            const ip = document.getElementById('detailIP').textContent.replace('IP: ', '');
-            if (!ip || ip === '--') return;
+            // Guards: Ensure a device is selected, it supports variable CT, and temp mode is active
+            if (isUpdatingProgrammatically || !selectedDevice || !selectedDevice.isVariableCT || !modeTempRadio.checked) {
+                return;
+            }
 
-            // When user interacts with temperature slider, enable it and disable color picker
-            document.getElementById('colorTempSlider').disabled = false;
-            document.getElementById('colorPicker').disabled = true;
-            // Set color picker to white as a visual cue for temperature mode
-            const whiteHex = rgbToHex(hsvToRgb(0, 0, 100).r, hsvToRgb(0, 0, 100).g, hsvToRgb(0, 0, 100).b);
-            document.getElementById('colorPicker').value = whiteHex;
+            const ip = selectedDevice.ip; // Use selectedDevice.ip
+            const tempValue = parseInt(colorTempSlider.value, 10);
+            const currentBrightness = parseInt(brightnessSlider.value, 10);
 
-            const lightState = {
-                ip: ip,
-                colorTemp: parseInt(document.getElementById('colorTempSlider').value),
-                brightness: parseInt(document.getElementById('brightnessSlider').value), // Use current brightness
-                hue: 0, // Explicitly set to 0 for temp mode
-                saturation: 0, // Explicitly set to 0 for temp mode
-                on: document.getElementById('powerToggle').checked
+            const payload = {
+                // ip: ip, // Not needed in payload body, IP is in URL path
+                on_off: powerToggleEl.checked, 
+                hue: 0,
+                saturation: 0,
+                brightness: currentBrightness,
+                color_temp: tempValue
             };
 
-            fetch('/api/set-light-state', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(lightState)
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    console.log('Color temperature updated successfully');
-                } else {
-                    console.error('Failed to update color temperature:', data.error);
+            updateStatus(`Setting ${selectedDevice.alias} temperature to ${tempValue}K...`);
+
+            try {
+                const res = await fetch(`/api/device/${ip}/light-state`, { // CORRECTED ENDPOINT
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({ error: 'Unknown error structure' }));
+                    console.error('Error setting light temperature:', res.status, errorData);
+                    updateStatus(`Error setting temperature: ${errorData.error || res.statusText || 'Failed'}`);
+                    return;
                 }
-            })
-            .catch(error => console.error('Error setting light state for color temperature:', error));
+
+                const result = await res.json();
+                if (result && result.success) {
+                    updateStatus(`${selectedDevice.alias} temperature set to ${tempValue}K.`);
+                    // Optionally, re-fetch details if needed, though values are set locally
+                    // getDeviceDetails(ip);
+                } else {
+                    console.error('Failed to set light temperature:', result);
+                    updateStatus(`Error setting temperature: ${result.error || 'Failed from server logic'}`);
+                }
+            } catch (error) {
+                console.error('Error setting light temperature via API:', error);
+                updateStatus('API error setting temperature. Check console.');
+            }
         }
 
-        async function handleColorChange(event) {
+        async function handlePaletteColorClick(hexColor) {
             if (isUpdatingProgrammatically || !selectedDevice || !selectedDeviceIsColor || modeTempRadio.checked) {
                 // If not in color mode or if update is programmatic, do nothing
                 return;
             }
 
             const ip = selectedDevice.ip;
-            const hexColor = event.target.value;
+            // hexColor is passed as argument
             const rgb = hexToRgb(hexColor);
+            if (!rgb) {
+                console.error("Invalid HEX color for palette click:", hexColor);
+                return;
+            }
             const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
-
-            // When color changes, update the brightness slider to match the color's value (V in HSV)
-            // And use this as the brightness for the payload.
-            isUpdatingProgrammatically = true; // Prevent brightness slider's own event from firing
-            brightnessSlider.value = hsv.v;
-            brightnessValue.textContent = hsv.v;
-            isUpdatingProgrammatically = false;
+            const currentBrightness = parseInt(brightnessSlider.value);
 
             const payload = {
-                ip: ip,
-                on: powerToggleEl.checked, // Use current power state from toggle
+                on_off: true, // Ensure light is on when color is set
                 hue: hsv.h,
                 saturation: hsv.s,
-                brightness: hsv.v, // Brightness from the color itself (V in HSV)
-                colorTemp: 0 // Ensure color mode
+                brightness: currentBrightness,
+                color_temp: 0 // Kasa interprets 0 for color_temp as staying in color mode
             };
 
-            // No need to call updateStatus here, as continuous input might be too noisy.
-            // The visual feedback from the light itself is primary.
-            // Consider adding a small debounce if performance becomes an issue.
+            updateStatus(`Setting ${selectedDevice.alias} to ${hexColor} (H:${hsv.h} S:${hsv.s} B:${currentBrightness})...`);
+
             try {
-                const response = await fetch('/api/set-light-state', {
+                const res = await fetch(`/api/device/${ip}/light-state`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const result = await response.json();
-                if (!response.ok || result.status !== 'success') {
-                    console.error('Error setting color:', result.error || 'Failed');
-                    updateStatus(`Error setting color: ${result.error || 'Failed'}`);
-                    // Optionally re-fetch details on error to re-sync UI
-                    // getDeviceDetails(ip);
-                } else {
-                    // Success, light should update. UI already reflects picked color.
-                    // Brightness slider also updated above.
+
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({ error: 'Unknown error structure' }));
+                    console.error('Error setting light state:', res.status, errorData);
+                    updateStatus(`Error setting color: ${errorData.error || res.statusText || 'Failed'}`);
+                    return; // Stop further processing on error
                 }
+
+                const result = await res.json(); // Assuming server sends back { success: true/false, error: ... }
+                if (result && result.success) {
+                    updateStatus(`${selectedDevice.alias} color set to ${hexColor}.`);
+                    // Update UI elements like the color picker and brightness slider to reflect this new state
+                    isUpdatingProgrammatically = true;
+                    // No direct color picker to update, but we could store last selected color if needed
+                    // brightnessSlider.value = currentBrightness; // Already done by user or NLS
+                    // brightnessValue.textContent = currentBrightness;
+                    lastSelectedHexColor = hexColor; // Store the successfully picked color
+                    isUpdatingProgrammatically = false;
+
+                } else {
+                    console.error('Failed to set light state:', result);
+                    updateStatus(`Error setting color: ${result.error || 'Failed from server logic'}`);
+                }
+
             } catch (error) {
                 console.error('Error setting color via API:', error);
-                updateStatus('API error setting color.');
+                updateStatus('API error setting color. Check console.');
             }
         }
 
-        async function handleModeSwitch() {
+        async function handleBrightnessChange(event) {
             if (isUpdatingProgrammatically || !selectedDevice) return;
-
-            const ip = selectedDevice.ip;
-            let payload = {
-                ip: ip,
-                on: powerToggleEl.checked,
-                // Brightness will be set based on mode below
-            };
-
-            if (modeColorRadio.checked) {
-                console.log("Switching to Color Mode for", ip);
-                const hexColor = colorPicker.value; // Use current color picker value when switching
-                const rgbColor = hexToRgb(hexColor);
-                const hsvColor = rgbToHsv(rgbColor.r, rgbColor.g, rgbColor.b);
-                payload.hue = hsvColor.h;
-                payload.saturation = hsvColor.s;
-                payload.brightness = hsvColor.v; // Use color's value for brightness
-                payload.colorTemp = 0;
-
-                isUpdatingProgrammatically = true;
-                colorPicker.disabled = false;
-                colorTempSlider.disabled = true;
-                brightnessSlider.value = hsvColor.v;
-                brightnessValue.textContent = hsvColor.v;
-                isUpdatingProgrammatically = false;
-
-            } else if (modeTempRadio.checked) {
-                console.log("Switching to White Mode for", ip);
-                payload.hue = 0;
-                payload.saturation = 0;
-                payload.brightness = parseInt(brightnessSlider.value, 10); // Use brightness slider's current value
-                payload.colorTemp = parseInt(colorTempSlider.value, 10);
-
-                isUpdatingProgrammatically = true;
-                colorPicker.disabled = true;
-                colorPicker.value = rgbToHex(hsvToRgb(0,0,100).r, hsvToRgb(0,0,100).g, hsvToRgb(0,0,100).b); // Set to white
-                colorTempSlider.disabled = false;
-                // Brightness slider remains as is for white mode
-                isUpdatingProgrammatically = false;
-            }
-
-            updateStatus(`Switching mode for ${selectedDevice.alias}...`);
-            try {
-                const response = await fetch('/api/set-light-state', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const result = await response.json();
-                if (response.ok && result.status === 'success') {
-                    updateStatus(`Mode switched successfully for ${selectedDevice.alias}.`);
-                    getDeviceDetails(ip); 
-                } else {
-                    updateStatus(`Error switching mode: ${result.error || 'Failed'}`);
-                    getDeviceDetails(ip);
-                }
-            } catch (error) {
-                console.error('Error switching mode:', error);
-                updateStatus('Error sending request to switch mode.');
-                getDeviceDetails(ip); 
-            }
-        }
-
-        async function handleBrightnessChange() {
-            if (!selectedDevice || !selectedDevice.ip) return;
-
             brightnessValue.textContent = brightnessSlider.value; // Update text display immediately
             const brightness = parseInt(brightnessSlider.value);
             let payload = {
@@ -851,7 +826,7 @@
             };
 
             if (modeColorRadio.checked) { // Color Mode
-                const hexColor = colorPicker.value;
+                const hexColor = colorPaletteContainer.style.backgroundColor;
                 const rgb = hexToRgb(hexColor);
                 if (rgb) {
                     const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
@@ -929,6 +904,89 @@
             }
         }
 
+        // --- Mode Switching --- 
+        async function handleModeSwitch() {
+            if (isUpdatingProgrammatically || !selectedDevice || !(selectedDevice.isColor && selectedDevice.isVariableCT)) {
+                // Only proceed if a device supporting both modes is selected and not a programmatic update
+                return;
+            }
+
+            const ip = selectedDevice.ip;
+            let payload = {
+                on_off: powerToggleEl.checked,
+                brightness: parseInt(brightnessSlider.value, 10)
+            };
+            let mode;
+
+            if (modeColorRadio.checked) {
+                mode = "color";
+                // Show color palette, hide temp slider
+                colorPaletteContainer.style.display = 'flex';
+                colorTempContainer.style.display = 'none';
+                colorTempSlider.disabled = true;
+                renderColorPalette(); // Render the color swatches
+
+                // Prepare payload for color mode
+                const rgb = hexToRgb(lastSelectedHexColor); // Use last selected hex color
+                if (rgb) {
+                    const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+                    payload.hue = hsv.h;
+                    payload.saturation = hsv.s;
+                    payload.color_temp = 0; // Explicitly 0 for color mode
+                } else {
+                    // Fallback if lastSelectedHexColor is somehow invalid (should not happen)
+                    payload.hue = 0;
+                    payload.saturation = 100; // Default to a saturated red if error
+                    payload.color_temp = 0;
+                }
+            } else { // modeTempRadio.checked
+                mode = "temperature";
+                // Show temp slider, hide color palette
+                colorPaletteContainer.style.display = 'none';
+                colorTempContainer.style.display = 'block';
+                colorTempSlider.disabled = false;
+
+                // Prepare payload for temperature mode
+                payload.hue = 0;
+                payload.saturation = 0;
+                payload.color_temp = parseInt(colorTempSlider.value, 10);
+            }
+
+            updateStatus(`Switching ${selectedDevice.alias} to ${mode} mode...`);
+
+            try {
+                const res = await fetch(`/api/device/${ip}/light-state`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({ error: 'Unknown error structure' }));
+                    console.error(`Error switching mode for ${ip}:`, res.status, errorData);
+                    updateStatus(`Error switching mode: ${errorData.error || res.statusText || 'Failed'}`);
+                    // Optionally revert UI if switch fails by re-fetching details
+                    // getDeviceDetails(ip);
+                    return;
+                }
+
+                const result = await res.json();
+                if (result && result.success) {
+                    updateStatus(`${selectedDevice.alias} switched to ${mode} mode.`);
+                    // Device state is now updated, UI reflects the new mode selection.
+                    // Brightness and specific color/temp values are sent.
+                } else {
+                    console.error(`Failed to switch mode for ${ip}:`, result);
+                    updateStatus(`Error switching mode: ${result.error || 'Failed from server logic'}`);
+                    // getDeviceDetails(ip); // Re-sync UI on failure
+                }
+            } catch (error) {
+                console.error(`API error switching mode for ${ip}:`, error);
+                updateStatus('API error switching mode. Check console.');
+                // getDeviceDetails(ip); // Re-sync UI on failure
+            }
+        }
+
         function renderDeviceList(devices) {
             // Clear previous list
             deviceListEl.innerHTML = '';
@@ -991,6 +1049,23 @@
 
         // Initial setup
         discoverDevices(); // Automatically discover on page load
+
+        // --- Color Palette Logic ---
+        function renderColorPalette() {
+            colorPaletteContainer.innerHTML = ''; // Clear existing swatches
+            colorPalette.forEach(color => {
+                const swatch = document.createElement('div');
+                swatch.classList.add('color-swatch');
+                swatch.style.backgroundColor = color.hex;
+                swatch.style.width = '25px';
+                swatch.style.height = '25px';
+                swatch.style.border = '1px solid #ccc';
+                swatch.style.cursor = 'pointer';
+                swatch.title = color.name; // Tooltip
+                swatch.addEventListener('click', () => handlePaletteColorClick(color.hex));
+                colorPaletteContainer.appendChild(swatch);
+            });
+        }
     </script>
 </body>
 </html>
