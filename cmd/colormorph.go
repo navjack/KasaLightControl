@@ -10,19 +10,20 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 // Configurable section tuned for continuous rainbow motion.
 var (
-	targetFrameInterval  = 16 * time.Millisecond // Update rate ≈40 Hz
-	rainbowCycleDuration = 3600 * time.Second    // Time for a full 360° hue sweep
-	phaseOffsetAmplitude = 90.0                  // Max hue separation between bulbs (degrees)
-	phaseOffsetPeriod    = 60 * time.Second      // How long it takes the offset to swing end to end
-	baseLightness        = 25.0                  // Perceptual brightness (L* 0–100)
-	baseChroma           = 120.0                 // Colourfulness in LCh (C* ≥0)
-	logFrameEvery        = 40                    // Log roughly once per second
+	targetFrameInterval  = 16 * time.Millisecond // Update rate ≈60 Hz
+	rainbowCycleDuration = 120 * time.Second     // Time for a full 360° hue sweep (2 minutes)
+	phaseOffsetAmplitude = 120.0                 // Max hue separation between bulbs (degrees)
+	phaseOffsetPeriod    = 15 * time.Second      // How long it takes the offset to swing end to end
+	baseLightness        = 30.0                  // Perceptual brightness (L* 0–100)
+	baseChroma           = 100.0                 // Colourfulness in LCh (C* ≥0)
+	logFrameEvery        = 60                    // Log roughly once per second
 	brightness           = 100                   // Bulb brightness percentage
 	colorPreviewEnabled  = true
 
@@ -32,11 +33,11 @@ var (
 )
 
 var (
-	singleLightnessSwing  = 12.0             // +/- L* modulation for single-light mode
-	singleChromaSwing     = 45.0             // +/- C* modulation for single-light mode
-	singleHueJitter       = 24.0             // Degrees of hue wobble for single-light mode
-	singlePulsePeriod     = 14 * time.Second // Period for lightness/chroma pulsing in single-light mode
-	singleHueJitterPeriod = 20 * time.Second // Period for hue wobble when only one lamp is active
+	singleLightnessSwing  = 15.0            // +/- L* modulation for single-light mode
+	singleChromaSwing     = 50.0            // +/- C* modulation for single-light mode
+	singleHueJitter       = 30.0            // Degrees of hue wobble for single-light mode
+	singlePulsePeriod     = 8 * time.Second // Period for lightness/chroma pulsing in single-light mode
+	singleHueJitterPeriod = 12 * time.Second // Period for hue wobble when only one lamp is active
 )
 
 type bulbInfo struct {
@@ -204,6 +205,7 @@ func runAnimation(ctx context.Context) (err error) {
 			var logParts []string
 			colors := make([]rgbColor, len(selectedBulbs))
 
+			// Calculate colors first
 			for i, bulb := range selectedBulbs {
 				rel := 0.0
 				if len(selectedBulbs) > 1 {
@@ -211,7 +213,6 @@ func runAnimation(ctx context.Context) (err error) {
 				}
 				hue := wrapDegrees(baseHue + rel*offset)
 				color := labToRGB(lchToLab(baseLightness, baseChroma, hue))
-				setBulbColor(bulb.ip, color)
 				colors[i] = color
 
 				if logEnabled {
@@ -220,6 +221,17 @@ func runAnimation(ctx context.Context) (err error) {
 							bulb.name, hue, color.R, color.G, color.B))
 				}
 			}
+
+			// Update all bulbs concurrently
+			var wg sync.WaitGroup
+			for i, bulb := range selectedBulbs {
+				wg.Add(1)
+				go func(ip string, color rgbColor) {
+					defer wg.Done()
+					setBulbColor(ip, color)
+				}(bulb.ip, colors[i])
+			}
+			wg.Wait()
 
 			renderColorPreview(selectedBulbs, colors)
 
@@ -348,7 +360,7 @@ func clampToByte(v float64) int {
 }
 
 func setBulbColor(ip string, color rgbColor) {
-	cmd := exec.Command("/Volumes/4terrybi/coding/Kasa Light Apps/KasaLightControl/cmd/kasacli/kasacli",
+	cmd := exec.Command("./kasacli/kasacli",
 		"-command", "set_hsv",
 		"-ip", ip,
 		"-r", fmt.Sprintf("%d", color.R),
