@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -20,13 +27,139 @@ var (
 
 	lampshadeIP  = "192.168.2.6"
 	livingRoomIP = "192.168.2.8"
+	bedroomIP    = "192.168.2.7"
 )
+
+var (
+	singleLightnessSwing  = 12.0             // +/- L* modulation for single-light mode
+	singleChromaSwing     = 45.0             // +/- C* modulation for single-light mode
+	singleHueJitter       = 24.0             // Degrees of hue wobble for single-light mode
+	singlePulsePeriod     = 14 * time.Second // Period for lightness/chroma pulsing in single-light mode
+	singleHueJitterPeriod = 20 * time.Second // Period for hue wobble when only one lamp is active
+)
+
+type bulbInfo struct {
+	option string
+	label  string
+	name   string
+	ip     string
+}
+
+var availableBulbs = []bulbInfo{
+	{option: "1", label: "Living room", name: "living room", ip: livingRoomIP},
+	{option: "2", label: "Lampshade", name: "lampshade", ip: lampshadeIP},
+	{option: "3", label: "Bedroom", name: "bedroom", ip: bedroomIP},
+}
+
+func allBulbs() []bulbInfo {
+	bulbs := make([]bulbInfo, len(availableBulbs))
+	copy(bulbs, availableBulbs)
+	return bulbs
+}
+
+func describeSelection(selected []bulbInfo) string {
+	if len(selected) == len(availableBulbs) {
+		return "all lights"
+	}
+	names := make([]string, len(selected))
+	for i, bulb := range selected {
+		names[i] = bulb.name
+	}
+	return strings.Join(names, ", ")
+}
+
+func promptLightSelection() []bulbInfo {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Println("Select lights to animate:")
+	fmt.Println("  [Enter] All lights (default)")
+	for _, bulb := range availableBulbs {
+		fmt.Printf("  %s) %s\n", bulb.option, bulb.label)
+	}
+	fmt.Print("> ")
+
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		logEvent("Input error, defaulting to all lights: %v", err)
+		return allBulbs()
+	}
+
+	tokens := strings.Fields(input)
+	if len(tokens) == 0 || (len(tokens) == 1 && tokens[0] == "0") {
+		return allBulbs()
+	}
+
+	lookup := make(map[string]bulbInfo, len(availableBulbs))
+	for _, bulb := range availableBulbs {
+		lookup[bulb.option] = bulb
+	}
+
+	selected := make([]bulbInfo, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
+
+	for _, token := range tokens {
+		bulb, ok := lookup[token]
+		if !ok {
+			fmt.Printf("Unknown selection %q ignored.\n", token)
+			continue
+		}
+		if seen[bulb.option] {
+			continue
+		}
+		selected = append(selected, bulb)
+		seen[bulb.option] = true
+	}
+
+	if len(selected) == 0 {
+		fmt.Println("No valid selections entered; using all lights.")
+		return allBulbs()
+	}
+
+	return selected
+}
 
 type rgbColor struct {
 	R, G, B int
 }
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	for {
+		if err := runAnimation(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				logEvent("Received interrupt, exiting.")
+				return
+			}
+			logEvent("Animation loop ended unexpectedly: %v", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			logEvent("Context canceled; exiting.")
+			return
+		default:
+		}
+
+		time.Sleep(250 * time.Millisecond)
+		logEvent("Restarting animation loop.")
+	}
+}
+
+func runAnimation(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("animation panic recovered: %v", r)
+		}
+	}()
+
+	selectedBulbs := promptLightSelection()
+	if len(selectedBulbs) == 0 {
+		selectedBulbs = allBulbs()
+	}
+	selectionLabel := describeSelection(selectedBulbs)
+
 	if targetFrameInterval <= 0 {
 		targetFrameInterval = 25 * time.Millisecond
 	}
@@ -36,27 +169,54 @@ func main() {
 	start := time.Now()
 	frame := 0
 
-	logEvent("Starting rainbow morph: cycle=%s offsetAmplitude=%.1f° offsetPeriod=%s", rainbowCycleDuration, phaseOffsetAmplitude, phaseOffsetPeriod)
+	logEvent("Starting rainbow morph (%s): cycle=%s offsetAmplitude=%.1f° offsetPeriod=%s", selectionLabel, rainbowCycleDuration, phaseOffsetAmplitude, phaseOffsetPeriod)
 
-	for now := range ticker.C {
-		elapsed := now.Sub(start)
-		baseHue := wrapDegrees(elapsed.Seconds() * 360.0 / rainbowCycleDuration.Seconds())
-		offset := offsetDegrees(elapsed)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case now := <-ticker.C:
+			elapsed := now.Sub(start)
+			baseHue := wrapDegrees(elapsed.Seconds() * 360.0 / rainbowCycleDuration.Seconds())
 
-		livingHue := wrapDegrees(baseHue + offset)
-		lampHue := wrapDegrees(baseHue - offset)
+			if len(selectedBulbs) == 1 {
+				bulb := selectedBulbs[0]
+				l, c, hue := singleLightLCH(elapsed, baseHue)
+				color := labToRGB(lchToLab(l, c, hue))
+				setBulbColor(bulb.ip, color)
 
-		livingRGB := labToRGB(lchToLab(baseLightness, baseChroma, livingHue))
-		lampRGB := labToRGB(lchToLab(baseLightness, baseChroma, lampHue))
+				frame++
+				if logFrameEvery > 0 && frame%logFrameEvery == 0 {
+					logEvent("Frame %d: %s hue %.1f° L*%.1f C*%.1f RGB(%d,%d,%d)",
+						frame, bulb.name, hue, l, c, color.R, color.G, color.B)
+				}
+				continue
+			}
 
-		setBulbColor(livingRoomIP, livingRGB)
-		setBulbColor(lampshadeIP, lampRGB)
+			offset := offsetDegrees(elapsed)
+			frame++
+			logEnabled := logFrameEvery > 0 && frame%logFrameEvery == 0
+			var logParts []string
 
-		frame++
-		if logFrameEvery > 0 && frame%logFrameEvery == 0 {
-			logEvent("Frame %d: living hue %.1f° RGB(%d,%d,%d) | lampshade hue %.1f° RGB(%d,%d,%d)",
-				frame, livingHue, livingRGB.R, livingRGB.G, livingRGB.B,
-				lampHue, lampRGB.R, lampRGB.G, lampRGB.B)
+			for i, bulb := range selectedBulbs {
+				rel := 0.0
+				if len(selectedBulbs) > 1 {
+					rel = 1 - 2*float64(i)/float64(len(selectedBulbs)-1)
+				}
+				hue := wrapDegrees(baseHue + rel*offset)
+				color := labToRGB(lchToLab(baseLightness, baseChroma, hue))
+				setBulbColor(bulb.ip, color)
+
+				if logEnabled {
+					logParts = append(logParts,
+						fmt.Sprintf("%s hue %.1f° RGB(%d,%d,%d)",
+							bulb.name, hue, color.R, color.G, color.B))
+				}
+			}
+
+			if logEnabled {
+				logEvent("Frame %d: %s", frame, strings.Join(logParts, " | "))
+			}
 		}
 	}
 }
@@ -67,6 +227,23 @@ func offsetDegrees(elapsed time.Duration) float64 {
 	}
 	angle := 2 * math.Pi * elapsed.Seconds() / phaseOffsetPeriod.Seconds()
 	return phaseOffsetAmplitude * math.Sin(angle)
+}
+
+func singleLightLCH(elapsed time.Duration, baseHue float64) (lightness, chroma, hue float64) {
+	pulsePhase := 0.0
+	if singlePulsePeriod > 0 {
+		pulsePhase = 2 * math.Pi * elapsed.Seconds() / singlePulsePeriod.Seconds()
+	}
+
+	huePhase := 0.0
+	if singleHueJitterPeriod > 0 {
+		huePhase = 2 * math.Pi * elapsed.Seconds() / singleHueJitterPeriod.Seconds()
+	}
+
+	lightness = clampFloat(baseLightness+singleLightnessSwing*math.Sin(pulsePhase), 0, 100)
+	chroma = math.Max(0, baseChroma+singleChromaSwing*math.Sin(pulsePhase+math.Pi/2))
+	hue = wrapDegrees(baseHue + singleHueJitter*math.Sin(huePhase))
+	return
 }
 
 func wrapDegrees(h float64) float64 {
@@ -134,6 +311,16 @@ func linearToSRGB(c float64) float64 {
 		return 12.92 * c
 	}
 	return 1.055*math.Pow(c, 1.0/2.4) - 0.055
+}
+
+func clampFloat(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 func clamp01(v float64) float64 {
