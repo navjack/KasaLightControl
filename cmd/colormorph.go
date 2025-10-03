@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	_ "net/http/pprof"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -126,9 +130,71 @@ type rgbColor struct {
 
 var lastPreviewLine string
 
+// Performance tracking
+type performanceMetrics struct {
+	frameCount          int64
+	totalFrameTime      int64 // nanoseconds
+	totalColorCalcTime  int64
+	totalNetworkTime    int64
+	totalConcurrentTime int64
+	maxFrameTime        int64
+	minFrameTime        int64
+	networkCallCount    int64
+}
+
+var perfMetrics performanceMetrics
+
+func monitorPerformance(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			frames := atomic.LoadInt64(&perfMetrics.frameCount)
+			if frames > 0 {
+				totalTime := atomic.LoadInt64(&perfMetrics.totalFrameTime)
+				colorTime := atomic.LoadInt64(&perfMetrics.totalColorCalcTime)
+				networkTime := atomic.LoadInt64(&perfMetrics.totalNetworkTime)
+				concurrentTime := atomic.LoadInt64(&perfMetrics.totalConcurrentTime)
+				maxTime := atomic.LoadInt64(&perfMetrics.maxFrameTime)
+				minTime := atomic.LoadInt64(&perfMetrics.minFrameTime)
+				networkCalls := atomic.LoadInt64(&perfMetrics.networkCallCount)
+
+				avgFrameMs := float64(totalTime) / float64(frames) / 1e6
+				avgColorMs := float64(colorTime) / float64(frames) / 1e6
+				avgNetworkMs := float64(networkTime) / float64(networkCalls) / 1e6
+				avgConcurrentMs := float64(concurrentTime) / float64(frames) / 1e6
+				maxMs := float64(maxTime) / 1e6
+				minMs := float64(minTime) / 1e6
+
+				var mem runtime.MemStats
+				runtime.ReadMemStats(&mem)
+				goroutines := runtime.NumGoroutine()
+
+				logEvent("PERF: Frame %.2fms (min %.2f, max %.2f) | Color %.2fms | Network %.2fms | Concurrent %.2fms | Goroutines %d | Mem %dKB",
+					avgFrameMs, minMs, maxMs, avgColorMs, avgNetworkMs, avgConcurrentMs, goroutines, mem.Alloc/1024)
+			}
+		}
+	}
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start pprof server for profiling
+	go func() {
+		logEvent("Starting pprof server on :6060")
+		if err := http.ListenAndServe(":6060", nil); err != nil {
+			logEvent("pprof server error: %v", err)
+		}
+	}()
+
+	// Start performance monitoring
+	go monitorPerformance(ctx)
 
 	for {
 		if err := runAnimation(ctx); err != nil {
@@ -180,6 +246,7 @@ func runAnimation(ctx context.Context) (err error) {
 		case <-ctx.Done():
 			return ctx.Err()
 		case now := <-ticker.C:
+			frameStart := time.Now()
 			elapsed := now.Sub(start)
 			baseHue := wrapDegrees(elapsed.Seconds() * 360.0 / rainbowCycleDuration.Seconds())
 
@@ -205,7 +272,8 @@ func runAnimation(ctx context.Context) (err error) {
 			var logParts []string
 			colors := make([]rgbColor, len(selectedBulbs))
 
-			// Calculate colors first
+			// Time color calculations
+			colorStart := time.Now()
 			for i, bulb := range selectedBulbs {
 				rel := 0.0
 				if len(selectedBulbs) > 1 {
@@ -221,17 +289,46 @@ func runAnimation(ctx context.Context) (err error) {
 							bulb.name, hue, color.R, color.G, color.B))
 				}
 			}
+			colorElapsed := time.Since(colorStart)
+			atomic.AddInt64(&perfMetrics.totalColorCalcTime, colorElapsed.Nanoseconds())
 
-			// Update all bulbs concurrently
+			// Time concurrent bulb updates
+			concurrentStart := time.Now()
 			var wg sync.WaitGroup
 			for i, bulb := range selectedBulbs {
 				wg.Add(1)
 				go func(ip string, color rgbColor) {
 					defer wg.Done()
-					setBulbColor(ip, color)
+					setBulbColorTimed(ip, color)
 				}(bulb.ip, colors[i])
 			}
 			wg.Wait()
+			concurrentElapsed := time.Since(concurrentStart)
+			atomic.AddInt64(&perfMetrics.totalConcurrentTime, concurrentElapsed.Nanoseconds())
+
+			// Record frame timing
+			frameElapsed := time.Since(frameStart)
+			atomic.AddInt64(&perfMetrics.frameCount, 1)
+			atomic.AddInt64(&perfMetrics.totalFrameTime, frameElapsed.Nanoseconds())
+
+			// Update min/max frame times
+			frameNanos := frameElapsed.Nanoseconds()
+			for {
+				oldMax := atomic.LoadInt64(&perfMetrics.maxFrameTime)
+				if frameNanos <= oldMax || atomic.CompareAndSwapInt64(&perfMetrics.maxFrameTime, oldMax, frameNanos) {
+					break
+				}
+			}
+			for {
+				oldMin := atomic.LoadInt64(&perfMetrics.minFrameTime)
+				if oldMin == 0 || frameNanos < oldMin {
+					if atomic.CompareAndSwapInt64(&perfMetrics.minFrameTime, oldMin, frameNanos) {
+						break
+					}
+				} else {
+					break
+				}
+			}
 
 			renderColorPreview(selectedBulbs, colors)
 
@@ -372,6 +469,25 @@ func setBulbColor(ip string, color rgbColor) {
 	if err := cmd.Run(); err != nil {
 		logEvent("Warning: failed to set bulb %s: %v", ip, err)
 	}
+}
+
+func setBulbColorTimed(ip string, color rgbColor) {
+	networkStart := time.Now()
+	cmd := exec.Command("./kasacli/kasacli",
+		"-command", "set_hsv",
+		"-ip", ip,
+		"-r", fmt.Sprintf("%d", color.R),
+		"-g", fmt.Sprintf("%d", color.G),
+		"-b", fmt.Sprintf("%d", color.B),
+		"-val", fmt.Sprintf("%d", brightness),
+	)
+
+	if err := cmd.Run(); err != nil {
+		logEvent("Warning: failed to set bulb %s: %v", ip, err)
+	}
+	networkElapsed := time.Since(networkStart)
+	atomic.AddInt64(&perfMetrics.totalNetworkTime, networkElapsed.Nanoseconds())
+	atomic.AddInt64(&perfMetrics.networkCallCount, 1)
 }
 
 func logEvent(format string, args ...interface{}) {
