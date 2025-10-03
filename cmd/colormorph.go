@@ -24,6 +24,7 @@ var (
 	baseChroma           = 120.0                 // Colourfulness in LCh (C* ≥0)
 	logFrameEvery        = 40                    // Log roughly once per second
 	brightness           = 100                   // Bulb brightness percentage
+	colorPreviewEnabled  = true
 
 	lampshadeIP  = "192.168.2.6"
 	livingRoomIP = "192.168.2.8"
@@ -122,6 +123,8 @@ type rgbColor struct {
 	R, G, B int
 }
 
+var lastPreviewLine string
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -185,6 +188,8 @@ func runAnimation(ctx context.Context) (err error) {
 				color := labToRGB(lchToLab(l, c, hue))
 				setBulbColor(bulb.ip, color)
 
+				renderColorPreview(selectedBulbs, []rgbColor{color})
+
 				frame++
 				if logFrameEvery > 0 && frame%logFrameEvery == 0 {
 					logEvent("Frame %d: %s hue %.1f° L*%.1f C*%.1f RGB(%d,%d,%d)",
@@ -197,6 +202,7 @@ func runAnimation(ctx context.Context) (err error) {
 			frame++
 			logEnabled := logFrameEvery > 0 && frame%logFrameEvery == 0
 			var logParts []string
+			colors := make([]rgbColor, len(selectedBulbs))
 
 			for i, bulb := range selectedBulbs {
 				rel := 0.0
@@ -206,6 +212,7 @@ func runAnimation(ctx context.Context) (err error) {
 				hue := wrapDegrees(baseHue + rel*offset)
 				color := labToRGB(lchToLab(baseLightness, baseChroma, hue))
 				setBulbColor(bulb.ip, color)
+				colors[i] = color
 
 				if logEnabled {
 					logParts = append(logParts,
@@ -213,6 +220,8 @@ func runAnimation(ctx context.Context) (err error) {
 							bulb.name, hue, color.R, color.G, color.B))
 				}
 			}
+
+			renderColorPreview(selectedBulbs, colors)
 
 			if logEnabled {
 				logEvent("Frame %d: %s", frame, strings.Join(logParts, " | "))
@@ -356,7 +365,34 @@ func setBulbColor(ip string, color rgbColor) {
 func logEvent(format string, args ...interface{}) {
 	timestamp := time.Now().Format(time.RFC3339)
 	message := fmt.Sprintf(format, args...)
-	fmt.Printf("[%s] %s\n", timestamp, message)
+	fmt.Printf("\r\033[2K[%s] %s\n", timestamp, message)
+	if colorPreviewEnabled && lastPreviewLine != "" {
+		fmt.Print(lastPreviewLine)
+	}
+}
+
+func renderColorPreview(selected []bulbInfo, colors []rgbColor) {
+	if !colorPreviewEnabled || len(selected) != len(colors) {
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("\r\033[2K")
+	for i, bulb := range selected {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(colorSwatch(colors[i]))
+		b.WriteString(" ")
+		b.WriteString(bulb.label)
+	}
+	preview := b.String()
+	fmt.Print(preview)
+	lastPreviewLine = preview
+}
+
+func colorSwatch(color rgbColor) string {
+	return fmt.Sprintf("\033[48;2;%d;%d;%dm  \033[0m", color.R, color.G, color.B)
 }
 
 // Re-used Lab helpers
