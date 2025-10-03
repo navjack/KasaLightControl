@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/user/kasalightcontrol/kasa"
 )
 
 // Configurable section tuned for continuous rainbow motion.
@@ -254,7 +256,7 @@ func runAnimation(ctx context.Context) (err error) {
 				bulb := selectedBulbs[0]
 				l, c, hue := singleLightLCH(elapsed, baseHue)
 				color := labToRGB(lchToLab(l, c, hue))
-				setBulbColor(bulb.ip, color)
+				setBulbColorDirectTCP(bulb.ip, color)
 
 				renderColorPreview(selectedBulbs, []rgbColor{color})
 
@@ -297,10 +299,10 @@ func runAnimation(ctx context.Context) (err error) {
 			var wg sync.WaitGroup
 			for i, bulb := range selectedBulbs {
 				wg.Add(1)
-				go func(ip string, color rgbColor) {
-					defer wg.Done()
-					setBulbColorTimed(ip, color)
-				}(bulb.ip, colors[i])
+			go func(ip string, color rgbColor) {
+				defer wg.Done()
+				setBulbColorDirectTCP(ip, color)
+			}(bulb.ip, colors[i])
 			}
 			wg.Wait()
 			concurrentElapsed := time.Since(concurrentStart)
@@ -485,6 +487,69 @@ func setBulbColorTimed(ip string, color rgbColor) {
 	if err := cmd.Run(); err != nil {
 		logEvent("Warning: failed to set bulb %s: %v", ip, err)
 	}
+	networkElapsed := time.Since(networkStart)
+	atomic.AddInt64(&perfMetrics.totalNetworkTime, networkElapsed.Nanoseconds())
+	atomic.AddInt64(&perfMetrics.networkCallCount, 1)
+}
+
+// rgbToHSV converts RGB (0-255) to HSV (H: 0-360, S: 0-100, V: 0-100)
+func rgbToHSV(r, g, b int) (int, int, int) {
+	// Normalize RGB to [0,1]
+	rf := float64(r) / 255.0
+	gf := float64(g) / 255.0
+	bf := float64(b) / 255.0
+
+	cmax := math.Max(rf, math.Max(gf, bf))
+	cmin := math.Min(rf, math.Min(gf, bf))
+	delta := cmax - cmin
+
+	var h float64
+	if delta == 0 {
+		h = 0
+	} else if cmax == rf {
+		h = 60 * math.Mod(((gf - bf) / delta), 6)
+	} else if cmax == gf {
+		h = 60 * (((bf - rf) / delta) + 2)
+	} else {
+		h = 60 * (((rf - gf) / delta) + 4)
+	}
+	if h < 0 {
+		h += 360
+	}
+
+	var s float64
+	if cmax == 0 {
+		s = 0
+	} else {
+		s = delta / cmax
+	}
+
+	v := cmax
+	return int(math.Round(h)), int(math.Round(s * 100)), int(math.Round(v * 100))
+}
+
+// Direct TCP implementation - much faster than subprocess
+func setBulbColorDirectTCP(ip string, color rgbColor) {
+	networkStart := time.Now()
+	
+	// Convert RGB to HSV for Kasa protocol
+	hue, saturation, _ := rgbToHSV(color.R, color.G, color.B)
+	
+	// Create light state command
+	lightState := map[string]interface{}{
+		"on_off":         1,
+		"ignore_default": 1,
+		"hue":            hue,
+		"saturation":     saturation,
+		"brightness":     brightness,
+		"color_temp":     0,
+	}
+	
+	// Send directly via TCP using kasa package
+	if _, err := kasa.SetLightState(ip, lightState); err != nil {
+		logEvent("Warning: failed to set bulb %s: %v", ip, err)
+	}
+	
 	networkElapsed := time.Since(networkStart)
 	atomic.AddInt64(&perfMetrics.totalNetworkTime, networkElapsed.Nanoseconds())
 	atomic.AddInt64(&perfMetrics.networkCallCount, 1)
